@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block title %}Agent Interaction - Home{% endblock %}
+
+{% block content %}
+    <h1>Agent Interaction UI</h1>
+
+    <div class="chat-container">
+        <div class="chat-history" id="chatHistory">
+            <!-- Agent responses (SQL query) will be displayed here -->
+        </div>
+        <div class="chat-input">
+            <textarea id="naturalLanguageQuery" placeholder="Enter your query here..."></textarea>
+            <button id="submitQuery">Generate SQL</button>
+        </div>
+    </div>
+
+    <div class="file-upload-container">
+        <h2>Data Upload</h2>
+        <form id="uploadForm" enctype="multipart/form-data">
+            <input type="file" id="fileUpload" name="file">
+            <button type="button" id="uploadData">Upload File</button>
+        </form>
+        <div id="uploadMessages">
+            <!-- Upload status and metadata will be displayed here -->
+        </div>
+    </div>
+
+    <div class="metadata-container">
+        <h2>Metadata</h2>
+        <textarea id="metadataDisplay" placeholder="Editable metadata will appear here..." readonly></textarea>
+        <button id="approveMetadata">Approve Metadata</button>
+    </div>
+
+    <div class="plot-container">
+        <h2>Plot Display</h2>
+        <div id="plotDisplay">
+            <!-- Plots will be rendered here -->
+        </div>
+        <button id="requestPlot">Generate Plot</button>
+    </div>
+
+<script>
+let currentMetadataForQuery = null; // To store metadata from upload
+
+document.getElementById('uploadData').addEventListener('click', async () => {
+    const fileInput = document.getElementById('fileUpload');
+    const uploadMessages = document.getElementById('uploadMessages');
+    const metadataDisplay = document.getElementById('metadataDisplay');
+    const chatHistory = document.getElementById('chatHistory');
+
+    uploadMessages.innerHTML = ''; // Clear previous messages
+    metadataDisplay.value = ''; // Clear previous metadata
+    chatHistory.innerHTML = ''; // Clear previous SQL query
+    currentMetadataForQuery = null; // Reset metadata
+
+    if (fileInput.files.length === 0) {
+        uploadMessages.innerHTML = '<p style="color: red;">Please select a file to upload.</p>';
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    try {
+        uploadMessages.innerHTML = '<p>Uploading and processing...</p>';
+        const response = await fetch('/upload', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            uploadMessages.innerHTML = `<p style="color: green;">${result.message}</p>`;
+            if (result.metadata) {
+                currentMetadataForQuery = result.metadata; // Store for /query
+                let metadataString = `Table Name: ${result.metadata.table_name}\n`;
+                if (result.metadata.message) { // Display additional messages like "manual input needed"
+                    metadataString += `Info: ${result.metadata.message}\n`;
+                }
+                metadataString += "\nColumns:\n";
+                if (result.metadata.columns && result.metadata.columns.length > 0) {
+                    result.metadata.columns.forEach(col => {
+                        metadataString += `- ${col.name} (${col.type})\n`;
+                    });
+                } else {
+                    metadataString += "- (No columns inferred or defined)\n";
+                }
+                metadataDisplay.value = metadataString;
+            }
+        } else {
+            uploadMessages.innerHTML = `<p style="color: red;">Error: ${result.error}</p>`;
+        }
+    } catch (error) {
+        uploadMessages.innerHTML = `<p style="color: red;">An unexpected error occurred: ${error.toString()}</p>`;
+    }
+});
+
+document.getElementById('submitQuery').addEventListener('click', async () => {
+    const naturalLanguageQuery = document.getElementById('naturalLanguageQuery').value;
+    const chatHistory = document.getElementById('chatHistory');
+    chatHistory.innerHTML = ''; // Clear previous query/error
+
+    if (!naturalLanguageQuery.trim()) {
+        chatHistory.innerHTML = '<p style="color: orange;">Please enter a natural language query.</p>';
+        return;
+    }
+
+    if (!currentMetadataForQuery) {
+        chatHistory.innerHTML = '<p style="color: orange;">Please upload a file and process its metadata first.</p>';
+        return;
+    }
+    
+    // Basic check for table_name; column check is less strict as it might be SQLite
+    if (!currentMetadataForQuery.table_name) {
+        chatHistory.innerHTML = '<p style="color: orange;">Table name is missing in metadata. Cannot generate SQL query.</p>';
+        return;
+    }
+
+    try {
+        chatHistory.innerHTML = '<p>Generating and executing SQL query...</p>';
+        const response = await fetch('/query', { // Changed from /execute_sql
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ 
+                naturalLanguageQuery: naturalLanguageQuery,
+                metadata: currentMetadataForQuery 
+            })
+        });
+
+        const result = await response.json();
+        let outputHTML = '';
+
+        if (result.natural_language_response) {
+            outputHTML += `<strong>Natural Language Answer:</strong><p>${result.natural_language_response}</p><hr>`;
+        }
+
+        if (result.sql_query) {
+            outputHTML += `<strong>SQL Query:</strong><pre>${result.sql_query}</pre>`;
+        } else {
+            outputHTML += `<strong>SQL Query:</strong><pre>(Not available)</pre>`;
+        }
+
+        if (result.error) {
+            // If there's an error, and it's not already part of the NL response (or NL response is generic)
+            if (!result.natural_language_response || !result.natural_language_response.toLowerCase().includes(result.error.toLowerCase())) {
+                 outputHTML += `<p style="color: red;">Error: ${result.error}</p>`;
+            }
+        }
+
+        if (result.results) {
+            if (result.results.length > 0) {
+                outputHTML += '<strong>Query Results:</strong>';
+                let tableHTML = '<table><thead><tr>';
+                Object.keys(result.results[0]).forEach(key => {
+                    tableHTML += `<th>${key}</th>`;
+                });
+                tableHTML += '</tr></thead><tbody>';
+                result.results.forEach(row => {
+                    tableHTML += '<tr>';
+                    Object.values(row).forEach(val => {
+                        tableHTML += `<td>${val !== null ? val : ''}</td>`; // Handle nulls
+                    });
+                    tableHTML += '</tr>';
+                });
+                tableHTML += '</tbody></table>';
+                outputHTML += tableHTML;
+            } else if (!result.error) { 
+                 outputHTML += '<p>Query executed successfully, but returned no results.</p>';
+            }
+        } else if (!result.error && (!result.natural_language_response || !result.natural_language_response.includes("no results"))) { 
+            // Avoid double "no results" if NL summary already said it.
+            outputHTML += '<p>No results returned from query execution.</p>';
+        }
+        
+        chatHistory.innerHTML = outputHTML;
+
+    } catch (error) {
+        chatHistory.innerHTML = `<p style="color: red;">An unexpected error occurred: ${error.toString()}</p>`;
+    }
+});
+
+document.getElementById('approveMetadata').addEventListener('click', () => {
+    // Logic for approving metadata
+    console.log("Metadata approved (not implemented)");
+});
+
+document.getElementById('requestPlot').addEventListener('click', async () => {
+    const plotDisplay = document.getElementById('plotDisplay');
+    plotDisplay.innerHTML = '<p>Generating plot...</p>'; // Show loading message
+
+    try {
+        const response = await fetch('/plot_data', {
+            method: 'POST',
+            // No body is needed if backend uses a globally cached DataFrame
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.plot_image) {
+            plotDisplay.innerHTML = `<img src="${result.plot_image}" alt="Generated Plot" style="max-width: 100%; height: auto;" />`;
+        } else if (result.error) {
+            plotDisplay.innerHTML = `<p style="color: red;">Error generating plot: ${result.error}</p>`;
+        } else {
+            plotDisplay.innerHTML = `<p style="color: red;">An unknown error occurred while generating the plot.</p>`;
+        }
+    } catch (error) {
+        plotDisplay.innerHTML = `<p style="color: red;">An unexpected error occurred: ${error.toString()}</p>`;
+    }
+});
+</script>
+{% endblock %}
