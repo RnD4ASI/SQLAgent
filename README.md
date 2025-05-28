@@ -2,6 +2,10 @@
 
 This project is a [brief description of the project].
 
+## User Guide
+
+For detailed instructions on how to set up and use this application, especially if you have a non-coding background, please see our comprehensive [User Guide](./USER_GUIDE.md).
+
 ## Directory Structure
 
 - `app/`: Contains the main application code.

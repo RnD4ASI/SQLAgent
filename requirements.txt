@@ -9,3 +9,4 @@ pandas>=1.3
 openai>=0.27 # Using a recent version, can be adjusted
 duckdb>=0.8.0
 matplotlib>=3.0 # Using a reasonable base version for matplotlib
+python-dotenv>=0.15 # For loading .env files

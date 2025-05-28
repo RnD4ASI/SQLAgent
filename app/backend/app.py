@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify
 import os
+from dotenv import load_dotenv
 import pandas as pd
 import openai
 import duckdb
@@ -8,6 +9,8 @@ matplotlib.use('Agg') # Use Agg backend for web server
 import matplotlib.pyplot as plt
 import io
 import base64
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.env')) # Load from project root
 
 app = Flask(__name__, template_folder='../templates', static_folder='../static')
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
