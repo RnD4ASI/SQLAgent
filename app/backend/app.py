@@ -9,12 +9,15 @@ matplotlib.use('Agg') # Use Agg backend for web server
 import matplotlib.pyplot as plt
 import io
 import base64
+import subprocess
+import json
+import tempfile
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.env')) # Load from project root
 
 app = Flask(__name__, template_folder='../templates', static_folder='../static')
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
-ALLOWED_EXTENSIONS = {'csv', 'parquet', 'sqlite'}
+ALLOWED_EXTENSIONS = {'csv', 'parquet', 'sqlite', 'rdata', 'rda'}
 # Global variable to cache the last successful DataFrame
 last_successful_df = None
 # Store the last uploaded filename globally for query execution
@@ -114,6 +117,139 @@ def execute_duckdb_query(sql_query: str, file_path: str, table_name: str):
             pass
         return None, f"An error occurred during SQL execution: {str(e)}"
 
+def execute_r_script(r_code_string: str, rdata_file_path: str, target_object_name: str) -> tuple[pd.DataFrame | None, str | None]:
+    """
+    Executes R data.table commands on an object within an Rdata file and returns the result as a Pandas DataFrame.
+
+    Args:
+        r_code_string (str): The R code (data.table commands) to execute on target_object_name.
+        rdata_file_path (str): Full path to the .Rdata or .rda file.
+        target_object_name (str): Name of the data object within the Rdata file.
+
+    Returns:
+        tuple: (pandas.DataFrame, None) if successful, or (None, str) if an error occurred.
+    """
+    temp_r_script_file = None
+    temp_csv_file = None
+
+    try:
+        # Sanitize paths for R (forward slashes)
+        rdata_file_path_r = rdata_file_path.replace('\\', '/')
+
+        # Create a temporary file for the R script
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.R', encoding='utf-8') as temp_r_script_file_obj:
+            temp_r_script_path = temp_r_script_file_obj.name
+            temp_r_script_path_r = temp_r_script_path.replace('\\', '/') # For Rscript execution if on Windows
+
+        # Create a temporary file path for the output CSV (R will write to this)
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv') as temp_csv_file_obj:
+            temp_csv_path = temp_csv_file_obj.name
+            temp_csv_path_r = temp_csv_path.replace('\\', '/') # For R script
+
+        r_script_content = f"""
+        options(error = function() {{
+            cat(geterrmessage(), file = stderr())
+            quit(save = "no", status = 1, runLast = FALSE)
+        }})
+
+        if (!requireNamespace("data.table", quietly = TRUE)) {{
+            write("Error: data.table package is not installed.", stderr())
+            quit(save = "no", status = 1, runLast = FALSE)
+        }}
+        library(data.table)
+
+        tryCatch({{
+            load_env <- new.env()
+            load("{rdata_file_path_r}", envir=load_env)
+
+            if (!exists("{target_object_name}", envir=load_env)) {{
+                stop(paste0("Object '", "{target_object_name}", "' not found in the Rdata file."))
+            }}
+
+            active_df <- load_env[["{target_object_name}"]]
+
+            if (!is.data.table(active_df)) {{
+                if (is.data.frame(active_df)) {{
+                    active_df <- as.data.table(active_df)
+                }} else {{
+                    stop(paste0("Object '", "{target_object_name}", "' is not a data.frame or data.table."))
+                }}
+            }}
+
+            # User's R code is executed here. It's expected to modify active_df or create a result.
+            # For simplicity, we assume the user's code assigns the final result back to 'active_df'.
+            # More complex scenarios might need active_df <- eval(parse(text=...)) if r_code_string is an expression
+            eval(parse(text = {repr(r_code_string)})) # Use repr to correctly escape the r_code_string
+
+            if (!exists("active_df")){{
+                 stop("The R code did not result in an 'active_df' object.")
+            }}
+
+            if (nrow(active_df) == 0) {{
+                # fwrite creates an empty file for a 0-row data.table, which is fine.
+                # However, if it's not a data.table at this point, it's an issue.
+                 if (!is.data.table(active_df)) {{
+                    stop("Result of R code is not a data.table and is empty.")
+                }}
+            }}
+
+            fwrite(active_df, file="{temp_csv_path_r}", row.names=FALSE)
+
+        }}, error = function(e) {{
+            write(paste("R script execution error:", e$message), stderr())
+            quit(save = "no", status = 1, runLast = FALSE)
+        }})
+
+        quit(save = "no", status = 0, runLast = FALSE) # Explicit success exit
+        """
+
+        with open(temp_r_script_path, 'w', encoding='utf-8') as f:
+            f.write(r_script_content)
+
+        # Execute the R script
+        process = subprocess.run(
+            ['Rscript', temp_r_script_path],
+            capture_output=True, text=True, check=False, encoding='utf-8'
+        )
+
+        if process.returncode == 0:
+            if os.path.exists(temp_csv_path) and os.path.getsize(temp_csv_path) > 0:
+                try:
+                    df = pd.read_csv(temp_csv_path)
+                    return df, None
+                except pd.errors.EmptyDataError:
+                     # Can happen if R wrote an empty file (e.g. 0-row data.table but with columns)
+                    return pd.DataFrame(), None # Return empty DataFrame
+                except Exception as e_read:
+                    return None, f"Error reading R script output CSV: {str(e_read)}. R stderr: {process.stderr.strip()}"
+            elif os.path.exists(temp_csv_path) and os.path.getsize(temp_csv_path) == 0: # Empty file means empty dataframe
+                return pd.DataFrame(), None
+            else:
+                return None, f"R script executed successfully but output CSV not found or empty. R stderr: {process.stderr.strip()}"
+        else:
+            error_message = f"R script execution failed (return code {process.returncode}). Error: {process.stderr.strip()}"
+            if not process.stderr.strip():
+                 error_message = f"R script execution failed (return code {process.returncode}) with no specific error message."
+            return None, error_message
+
+    except FileNotFoundError: # Rscript not found
+        return None, "Rscript command not found. Please ensure R is installed and in PATH."
+    except Exception as e:
+        return None, f"Python error during R script execution: {str(e)}"
+    finally:
+        # Clean up temporary files
+        # temp_r_script_path and temp_csv_path are defined if the with blocks were entered.
+        if 'temp_r_script_path' in locals() and os.path.exists(temp_r_script_path):
+            try:
+                os.remove(temp_r_script_path)
+            except Exception as e_clean_r:
+                print(f"Warning: Could not delete temporary R script {temp_r_script_path}: {e_clean_r}")
+        if 'temp_csv_path' in locals() and os.path.exists(temp_csv_path):
+            try:
+                os.remove(temp_csv_path)
+            except Exception as e_clean_csv:
+                 print(f"Warning: Could not delete temporary CSV file {temp_csv_path}: {e_clean_csv}")
+
 
 @app.route('/')
 def index():
@@ -169,6 +305,94 @@ def upload_file():
             except Exception as e:
                 return jsonify({'error': f'Error processing CSV file: {str(e)}'}), 500
         
+        elif filename.rsplit('.', 1)[1].lower() in ['rdata', 'rda']:
+            try:
+                # R script to extract metadata
+                r_script = f"""
+                tryCatch({{
+                    load('{filepath_r}') # Use R-compatible path
+                    obj_name <- ls()[1] # Assume first object is the target
+                    data_obj <- get(obj_name)
+
+                    if (is.data.frame(data_obj) || inherits(data_obj, "data.table")) {{
+                        cols <- colnames(data_obj)
+                        types <- sapply(data_obj, class)
+
+                        # Prepare types for JSON, handling cases where a column might have multiple classes
+                        formatted_types <- lapply(types, function(t) {{
+                            if (is.array(t) || is.list(t)) {{
+                                return(paste(t, collapse=", ")) # Join multiple classes if any
+                            }} else {{
+                                return(t)
+                            }}
+                        }})
+
+                        metadata_json <- jsonlite::toJSON(list(
+                            object_name = obj_name,
+                            columns = mapply(function(n, t) list(name=n, type=t), cols, formatted_types, SIMPLIFY=FALSE)
+                        ), auto_unbox = TRUE)
+                        cat(metadata_json)
+                    }} else {{
+                        stop("First object in Rdata is not a data.frame or data.table.")
+                    }}
+                }}, error = function(e) {{
+                    write(paste("R script error:", e$message), stderr())
+                    stop(e) # Ensure R script exits with error status
+                }})
+                """
+
+                filepath_r = filepath.replace('\\', '/') # Ensure forward slashes for R
+                process = subprocess.run(['Rscript', '-', filepath_r], input=r_script.format(filepath_r=filepath_r), text=True, capture_output=True, check=False)
+
+                if process.returncode == 0 and process.stdout:
+                    r_metadata = json.loads(process.stdout)
+
+                    # Map R types to SQL-like types
+                    type_mapping = {{
+                        'integer': 'INTEGER',
+                        'numeric': 'REAL',
+                        'character': 'TEXT',
+                        'factor': 'TEXT', # Factors are often treated as text
+                        'logical': 'BOOLEAN', # Or TEXT, depending on preference
+                        'Date': 'DATE',
+                        'POSIXct': 'TIMESTAMP', # Common for datetime
+                        'POSIXlt': 'TIMESTAMP'
+                        # Add more mappings as needed
+                    }}
+
+                    metadata_inferred = {{
+                        'table_name': r_metadata.get('object_name', filename.rsplit('.', 1)[0]),
+                        'columns': []
+                    }}
+                    for col in r_metadata.get('columns', []):
+                        # Handle multi-class types from R (e.g., "ordered, factor")
+                        r_type_primary = col.get('type', 'character').split(',')[0].strip()
+                        sql_type = type_mapping.get(r_type_primary, 'TEXT') # Default to TEXT
+                        metadata_inferred['columns'].append({'name': col['name'], 'type': sql_type})
+
+                    current_metadata = metadata_inferred
+                    return jsonify({{
+                        'message': 'RData processed successfully. Metadata extracted.',
+                        'metadata': current_metadata
+                    }}), 200
+                else:
+                    error_message = f"Error executing R script: {process.stderr}" if process.stderr else "R script execution failed with no specific error message."
+                    if process.returncode != 0:
+                         error_message += f" (Return code: {process.returncode})"
+                    print(f"R script stderr: {process.stderr}") # Log R errors to server console
+                    current_metadata = {{'table_name': filename.rsplit('.',1)[0], 'columns': [], 'message': f'Failed to process R data file: {error_message}'}}
+                    return jsonify({'error': error_message, 'metadata': current_metadata}), 500
+
+            except json.JSONDecodeError:
+                current_metadata = {{'table_name': filename.rsplit('.',1)[0], 'columns': [], 'message': 'Error parsing metadata from R script output.'}}
+                return jsonify({'error': 'Error parsing R script output.', 'metadata': current_metadata}), 500
+            except FileNotFoundError: # Rscript not found
+                 current_metadata = {{'table_name': filename.rsplit('.',1)[0], 'columns': [], 'message': 'Rscript command not found. Please ensure R is installed and in PATH.'}}
+                 return jsonify({'error': 'Rscript not found. Cannot process R data files.', 'metadata': current_metadata}), 500
+            except Exception as e:
+                current_metadata = {{'table_name': filename.rsplit('.',1)[0], 'columns': [], 'message': f'An unexpected error occurred: {str(e)}'}}
+                return jsonify({'error': f'Error processing R data file: {str(e)}', 'metadata': current_metadata}), 500
+
         # For other file types, metadata remains None or minimal
         current_metadata = {'table_name': filename.rsplit('.',1)[0], 'columns': [], 'message': 'Metadata not automatically inferred for this file type. Please provide or approve manually.'}
         return jsonify({'message': 'File uploaded successfully. Metadata may need manual input.', 'metadata': current_metadata }), 200
@@ -177,156 +401,259 @@ def upload_file():
 
 @app.route('/query', methods=['POST'])
 def handle_query():
-    global current_metadata, current_uploaded_filepath, current_uploaded_filename
+    global current_metadata, current_uploaded_filepath, current_uploaded_filename, last_successful_df
     
     if not (OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT):
-        return jsonify({'error': 'OpenAI API not configured on the server.', 'sql_query': None, 'results': None}), 500
+        return jsonify({'error': 'OpenAI API not configured on the server.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 500
 
     data = request.get_json()
     natural_language_query = data.get('naturalLanguageQuery')
+    agent_type = data.get('agent_type', 'sql') # Default to 'sql'
+
     # Use metadata passed from frontend if available, otherwise use globally stored one
-    # This allows for potential manual correction of metadata on the UI side later
     metadata_for_prompt = data.get('metadata', current_metadata) 
 
+    # Initialize variables
+    sql_query = ""
+    r_code_generated = ""
+    executed_query_text = ""
+    results_df = None
+    error_message = None
+    results_json = []
+    nl_summary = "Could not generate natural language summary." # Default
+
     if not natural_language_query:
-        return jsonify({'error': 'No natural language query provided.', 'sql_query': None, 'results': None}), 400
+        return jsonify({'error': 'No natural language query provided.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
     
     if not current_uploaded_filepath:
-         return jsonify({'error': 'No file has been uploaded yet or file context lost.', 'sql_query': None, 'results': None}), 400
+         return jsonify({'error': 'No file has been uploaded yet or file context lost.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
 
-    # Determine table name for the query
+    # Determine table name for the query (common for both SQL and R)
+    # For R, this is the object name within the Rdata file.
     table_name_for_query = metadata_for_prompt.get('table_name') if metadata_for_prompt else None
     if not table_name_for_query and current_uploaded_filename: # Fallback to filename if not in metadata
         table_name_for_query = current_uploaded_filename.rsplit('.', 1)[0]
     
     if not table_name_for_query:
-        return jsonify({'error': 'Could not determine table name for query.', 'sql_query': None, 'results': None}), 400
+        return jsonify({'error': 'Could not determine table name for query.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
 
-    # Check for columns, especially if not SQLite (for which schema is in file)
-    if current_uploaded_filename.rsplit('.', 1)[1].lower() not in ['sqlite']:
+    # Prerequisite check for column metadata (common for both SQL and R, unless SQLite for SQL)
+    # For R, column metadata is essential for the prompt.
+    is_sqlite = current_uploaded_filename.rsplit('.', 1)[1].lower() == 'sqlite'
+    if not is_sqlite or agent_type == 'r_datatable': # For R, always need metadata. For SQL, need if not SQLite.
         if not metadata_for_prompt or not metadata_for_prompt.get('columns'):
-            return jsonify({'error': 'Column metadata is missing for this file type. Please ensure metadata is processed.', 'sql_query': None, 'results': None}), 400
-
-    # --- First LLM Call to generate SQL ---
-    prompt_parts = [
-        "Given the table schema below and the user question, generate a valid SQL query to answer the question."
-    ]
-    prompt_parts.append(f"Table Name: {table_name_for_query}")
-
-    if metadata_for_prompt and metadata_for_prompt.get('columns'):
-        prompt_parts.append("Columns:")
-        for column in metadata_for_prompt['columns']:
-            prompt_parts.append(f"- {column['name']} ({column['type']})")
-    else:
-        prompt_parts.append("Columns: (Schema not fully provided or is embedded, e.g., in a SQLite file. Ensure your query references correct table and column names based on the file's actual schema.)")
-
-    prompt_parts.append(f"\nUser Question: {natural_language_query}")
-    prompt_parts.append("SQL Query:")
-    current_prompt = "\n".join(prompt_parts)
-    
-    sql_query = "" # Initialize sql_query to ensure it's always defined
+            return jsonify({'error': 'Column metadata is missing or not provided. Please ensure metadata is processed or provided.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
 
     try:
         deployment_name = os.environ.get("AZURE_DEPLOYMENT_NAME")
-
         if openai.api_type == "azure" and not deployment_name:
-            return jsonify({'error': 'AZURE_DEPLOYMENT_NAME environment variable not set for Azure OpenAI.', 'sql_query': None, 'results': None}), 500
+            return jsonify({'error': 'AZURE_DEPLOYMENT_NAME environment variable not set for Azure OpenAI.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 500
 
-        if openai.api_type == "azure":
-            response = openai.Completion.create(engine=deployment_name, prompt=current_prompt, max_tokens=150, temperature=0.1)
-        else:
-            response = openai.Completion.create(model="text-davinci-003", prompt=current_prompt, max_tokens=150, temperature=0.1)
-        
-        sql_query = response.choices[0].text.strip()
-        if not sql_query:
-            return jsonify({'error': 'LLM did not return a SQL query.', 'sql_query': '', 'results': None}), 500
-
-        # --- Attempt to execute the first generated SQL ---
-        results_df, error_message = execute_duckdb_query(sql_query, current_uploaded_filepath, table_name_for_query)
-
-        if error_message: # SQL execution failed
-            print(f"Initial SQL query failed: {sql_query}. Error: {error_message}. Attempting correction...")
-            
-            reflection_prompt_parts = [
-                "The following SQL query resulted in an error. Please correct it.",
-                f"Original Question: {natural_language_query}",
-                f"Table Name: {table_name_for_query}"
+        if agent_type == 'sql':
+            # --- SQL Agent Logic ---
+            prompt_parts = [
+                "Given the table schema below and the user question, generate a valid SQL query to answer the question."
             ]
+            prompt_parts.append(f"Table Name: {table_name_for_query}")
+
             if metadata_for_prompt and metadata_for_prompt.get('columns'):
-                reflection_prompt_parts.append("Columns:")
+                prompt_parts.append("Columns:")
                 for column in metadata_for_prompt['columns']:
-                    reflection_prompt_parts.append(f"- {column['name']} ({column['type']})")
-            else:
-                reflection_prompt_parts.append("Columns: (Schema not fully provided or embedded)")
-            
-            reflection_prompt_parts.extend([
-                f"Failed SQL: {sql_query}",
-                f"Error Message: {error_message}",
-                "Corrected SQL Query:"
-            ])
-            correction_prompt = "\n".join(reflection_prompt_parts)
+                    prompt_parts.append(f"- {column['name']} ({column['type']})")
+            elif not is_sqlite : # Only append if not SQLite and no columns given (SQLite schema is in file)
+                prompt_parts.append("Columns: (Schema not fully provided. Ensure your query references correct table and column names based on the file's actual schema.)")
+
+
+            prompt_parts.append(f"\nUser Question: {natural_language_query}")
+            prompt_parts.append("SQL Query:")
+            current_prompt = "\n".join(prompt_parts)
 
             if openai.api_type == "azure":
-                correction_response = openai.Completion.create(engine=deployment_name, prompt=correction_prompt, max_tokens=150, temperature=0.15) # Slightly higher temp
+                response = openai.Completion.create(engine=deployment_name, prompt=current_prompt, max_tokens=150, temperature=0.1)
             else:
-                correction_response = openai.Completion.create(model="text-davinci-003", prompt=correction_prompt, max_tokens=150, temperature=0.15)
+                response = openai.Completion.create(model="text-davinci-003", prompt=current_prompt, max_tokens=150, temperature=0.1)
             
-            corrected_sql_query = correction_response.choices[0].text.strip()
-            if not corrected_sql_query:
-                 return jsonify({'sql_query': sql_query, 'error': f'LLM did not return a corrected SQL query. Original error: {error_message}', 'results': None}), 500
+            sql_query = response.choices[0].text.strip()
+            executed_query_text = sql_query
+            if not sql_query:
+                error_message = 'LLM did not return a SQL query.'
+                # Return early as there's nothing to execute or correct
+                return jsonify({'error': error_message, 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
             
-            sql_query = corrected_sql_query 
-            print(f"Attempting corrected SQL query: {sql_query}")
             results_df, error_message = execute_duckdb_query(sql_query, current_uploaded_filepath, table_name_for_query)
-        
-        if error_message: 
-            return jsonify({'sql_query': sql_query, 'error': f'SQL execution failed after correction attempt: {error_message}', 'results': None, 'natural_language_response': None}), 400
-        else:
-            global last_successful_df # To cache the dataframe
-            last_successful_df = results_df.copy() if results_df is not None else pd.DataFrame() # Cache a copy
-            results_json = results_df.to_dict(orient='records') if results_df is not None else []
-            
-            # --- Third LLM Call to generate Natural Language Summary ---
-            nl_summary = "Could not generate natural language summary." # Default
-            try:
-                # Summarize results for the prompt
-                result_summary_for_prompt = ""
-                if not results_json:
-                    result_summary_for_prompt = "The query returned no results."
-                elif len(results_json) <= 5:
-                    result_summary_for_prompt = f"The query returned the following results:\n{pd.DataFrame(results_json).to_string()}"
-                else:
-                    result_summary_for_prompt = f"The query returned {len(results_json)} rows. Here are the first 5:\n{pd.DataFrame(results_json[:5]).to_string()}\n...and {len(results_json)-5} more rows."
 
-                summary_prompt_parts = [
-                    f"Based on the user's question '{natural_language_query}', the SQL query '{sql_query}', and the following SQL query results, provide a concise natural language answer:",
-                    result_summary_for_prompt,
-                    "\nNatural Language Answer:"
+            if error_message: # SQL execution failed, try to correct
+                print(f"Initial SQL query failed: {sql_query}. Error: {error_message}. Attempting correction...")
+                reflection_prompt_parts = [
+                    "The following SQL query resulted in an error. Please correct it.",
+                    f"Original Question: {natural_language_query}",
+                    f"Table Name: {table_name_for_query}"
                 ]
-                summary_prompt = "\n".join(summary_prompt_parts)
+                if metadata_for_prompt and metadata_for_prompt.get('columns'):
+                    reflection_prompt_parts.append("Columns:")
+                    for column in metadata_for_prompt['columns']:
+                        reflection_prompt_parts.append(f"- {column['name']} ({column['type']})")
+                elif not is_sqlite:
+                     reflection_prompt_parts.append("Columns: (Schema not fully provided or embedded)")
+
+                reflection_prompt_parts.extend([
+                    f"Failed SQL: {sql_query}",
+                    f"Error Message: {error_message}",
+                    "Corrected SQL Query:"
+                ])
+                correction_prompt = "\n".join(reflection_prompt_parts)
 
                 if openai.api_type == "azure":
-                    summary_response = openai.Completion.create(engine=deployment_name, prompt=summary_prompt, max_tokens=200, temperature=0.3) # Temp might be higher for creative summary
+                    correction_response = openai.Completion.create(engine=deployment_name, prompt=correction_prompt, max_tokens=150, temperature=0.15)
                 else:
-                    summary_response = openai.Completion.create(model="text-davinci-003", prompt=summary_prompt, max_tokens=200, temperature=0.3)
+                    correction_response = openai.Completion.create(model="text-davinci-003", prompt=correction_prompt, max_tokens=150, temperature=0.15)
+
+                corrected_sql_query = correction_response.choices[0].text.strip()
+                if not corrected_sql_query:
+                    # Stick with the original error message if LLM gives up
+                    error_message = f'LLM did not return a corrected SQL query. Original error: {error_message}'
+                    return jsonify({'error': error_message, 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
+
+                sql_query = corrected_sql_query
+                executed_query_text = sql_query
+                print(f"Attempting corrected SQL query: {sql_query}")
+                results_df, error_message = execute_duckdb_query(sql_query, current_uploaded_filepath, table_name_for_query)
+
+            # If error_message is still present, it will be handled before summarization
+
+        elif agent_type == 'r_datatable':
+            # --- R data.table Agent Logic ---
+            # Prerequisite check (already done for columns, table_name_for_query is R object name)
+
+            r_prompt_parts = [
+                "You are an R programming assistant. Generate R code using the `data.table` package to answer the user's question.",
+                "The data is loaded into an R object named `active_df` which is already a data.table.",
+                f"R Object (data.table) Name: active_df (derived from: {table_name_for_query})",
+                "Columns in `active_df`:"
+            ]
+            for column in metadata_for_prompt['columns']: # This check is now done above
+                r_prompt_parts.append(f"- {column['name']} (type: {column['type']})") # Type info might help LLM
+
+            r_prompt_parts.extend([
+                f"\nUser Question: {natural_language_query}",
+                "Generate only the R `data.table` code that performs the query on `active_df` and assigns the result back to `active_df`.",
+                "For example: active_df <- active_df[some_condition, .(new_col = sum(another_col))]",
+                "R data.table Code:"
+            ])
+            current_r_prompt = "\n".join(r_prompt_parts)
+
+            if openai.api_type == "azure":
+                response = openai.Completion.create(engine=deployment_name, prompt=current_r_prompt, max_tokens=200, temperature=0.1)
+            else:
+                response = openai.Completion.create(model="text-davinci-003", prompt=current_r_prompt, max_tokens=200, temperature=0.1)
+
+            r_code_generated = response.choices[0].text.strip()
+            executed_query_text = r_code_generated
+            if not r_code_generated:
+                error_message = 'LLM did not return R code.'
+                return jsonify({'error': error_message, 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
+
+            results_df, error_message = execute_r_script(r_code_generated, current_uploaded_filepath, table_name_for_query)
+
+            if error_message: # R execution failed, try to correct
+                print(f"Initial R code failed: {r_code_generated}. Error: {error_message}. Attempting correction...")
+                r_correction_prompt_parts = [
+                    "The following R data.table code resulted in an error. Please correct it.",
+                    "The data is in a data.table named `active_df`.",
+                    f"Original Question: {natural_language_query}",
+                    "Columns in `active_df`:"
+                ]
+                for column in metadata_for_prompt['columns']:
+                    r_correction_prompt_parts.append(f"- {column['name']} (type: {column['type']})")
+
+                r_correction_prompt_parts.extend([
+                    f"Failed R Code:\n{r_code_generated}",
+                    f"Error Message: {error_message}",
+                    "Corrected R data.table Code (assign result back to active_df):"
+                ])
+                r_correction_prompt = "\n".join(r_correction_prompt_parts)
+
+                if openai.api_type == "azure":
+                    r_correction_response = openai.Completion.create(engine=deployment_name, prompt=r_correction_prompt, max_tokens=250, temperature=0.15)
+                else:
+                    r_correction_response = openai.Completion.create(model="text-davinci-003", prompt=r_correction_prompt, max_tokens=250, temperature=0.15)
                 
-                nl_summary = summary_response.choices[0].text.strip()
-                if not nl_summary:
-                    nl_summary = "LLM did not provide a natural language summary."
+                corrected_r_code = r_correction_response.choices[0].text.strip()
+                if not corrected_r_code:
+                    error_message = f'LLM did not return corrected R code. Original error: {error_message}'
+                    return jsonify({'error': error_message, 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
 
-            except openai.error.OpenAIError as e_sum:
-                print(f"OpenAI API error during summary generation: {str(e_sum)}")
-                nl_summary = f"Error generating natural language summary: {str(e_sum)}"
-            except Exception as e_sum_gen:
-                print(f"Unexpected error during summary generation: {str(e_sum_gen)}")
-                nl_summary = f"Unexpected error generating natural language summary: {str(e_sum_gen)}"
+                r_code_generated = corrected_r_code
+                executed_query_text = r_code_generated
+                print(f"Attempting corrected R code: {r_code_generated}")
+                results_df, error_message = execute_r_script(r_code_generated, current_uploaded_filepath, table_name_for_query)
 
-            return jsonify({'sql_query': sql_query, 'results': results_json, 'error': None, 'natural_language_response': nl_summary}), 200
+        else:
+            error_message = f"Unsupported agent_type: {agent_type}"
+            # Return early as this is a fundamental configuration issue
+            return jsonify({'error': error_message, 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
 
-    except openai.error.OpenAIError as e:
-        return jsonify({'error': f'OpenAI API error: {str(e)}', 'sql_query': sql_query, 'results': None, 'natural_language_response': None}), 500
-    except Exception as e:
-        return jsonify({'error': f'An unexpected error occurred: {str(e)}', 'sql_query': sql_query, 'results': None, 'natural_language_response': None}), 500
+        # --- Common Result Processing & Summarization ---
+        if error_message:
+            # This error is from the execution (or correction attempt) of SQL or R code
+            return jsonify({'executed_query_text': executed_query_text, 'error': error_message, 'results': None, 'natural_language_response': None}), 400
+
+        # If we reach here, results_df should be populated from SQL or R execution
+        if results_df is not None:
+            last_successful_df = results_df.copy()
+            results_json = results_df.to_dict(orient='records')
+        else: # Should ideally not happen if error_message was not set, but as a safeguard
+            results_json = []
+            last_successful_df = pd.DataFrame()
+
+
+        # --- Third LLM Call to generate Natural Language Summary ---
+        # This part is common, using executed_query_text and results_json
+        try:
+            result_summary_for_prompt = ""
+            if not results_json:
+                result_summary_for_prompt = "The query returned no results."
+            elif len(results_json) <= 5:
+                result_summary_for_prompt = f"The query returned the following results:\n{pd.DataFrame(results_json).to_string()}"
+            else:
+                result_summary_for_prompt = f"The query returned {len(results_json)} rows. Here are the first 5:\n{pd.DataFrame(results_json[:5]).to_string()}\n...and {len(results_json)-5} more rows."
+
+            summary_prompt_parts = [
+                f"Based on the user's question '{natural_language_query}', the executed query '{executed_query_text}', and the following query results, provide a concise natural language answer:",
+                result_summary_for_prompt,
+                "\nNatural Language Answer:"
+            ]
+            summary_prompt = "\n".join(summary_prompt_parts)
+
+            if openai.api_type == "azure":
+                summary_response = openai.Completion.create(engine=deployment_name, prompt=summary_prompt, max_tokens=200, temperature=0.3)
+            else:
+                summary_response = openai.Completion.create(model="text-davinci-003", prompt=summary_prompt, max_tokens=200, temperature=0.3)
+
+            nl_summary = summary_response.choices[0].text.strip()
+            if not nl_summary:
+                nl_summary = "LLM did not provide a natural language summary."
+
+        except openai.error.OpenAIError as e_sum:
+            print(f"OpenAI API error during summary generation: {str(e_sum)}")
+            # Don't overwrite data results if only summary fails
+            nl_summary = f"Error generating natural language summary: {str(e_sum)}"
+        except Exception as e_sum_gen:
+            print(f"Unexpected error during summary generation: {str(e_sum_gen)}")
+            nl_summary = f"Unexpected error generating natural language summary: {str(e_sum_gen)}"
+
+        return jsonify({
+            'executed_query_text': executed_query_text,
+            'results': results_json,
+            'error': None, # Explicitly None if execution was successful up to this point
+            'natural_language_response': nl_summary
+        }), 200
+
+    except openai.error.OpenAIError as e: # Catch API errors from query generation/correction
+        # executed_query_text might hold the last attempted query
+        return jsonify({'error': f'OpenAI API error: {str(e)}', 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
+    except Exception as e: # Catch any other unexpected errors
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}', 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
 
 @app.route('/plot_data', methods=['POST'])
 def plot_data():

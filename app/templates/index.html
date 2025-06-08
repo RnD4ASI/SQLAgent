@@ -11,7 +11,14 @@
         </div>
         <div class="chat-input">
             <textarea id="naturalLanguageQuery" placeholder="Enter your query here..."></textarea>
-            <button id="submitQuery">Generate SQL</button>
+            <div>
+                <label for="agentSelector">Select Agent:</label>
+                <select id="agentSelector">
+                    <option value="sql" selected>SQL (DuckDB)</option>
+                    <option value="r_datatable">R (data.table)</option>
+                </select>
+                <button id="submitQuery">Submit Query</button>
+            </div>
         </div>
     </div>
 
@@ -100,6 +107,9 @@ document.getElementById('uploadData').addEventListener('click', async () => {
 document.getElementById('submitQuery').addEventListener('click', async () => {
     const naturalLanguageQuery = document.getElementById('naturalLanguageQuery').value;
     const chatHistory = document.getElementById('chatHistory');
+    const agentSelector = document.getElementById('agentSelector');
+    const selectedAgentType = agentSelector.value;
+
     chatHistory.innerHTML = ''; // Clear previous query/error
 
     if (!naturalLanguageQuery.trim()) {
@@ -112,22 +122,28 @@ document.getElementById('submitQuery').addEventListener('click', async () => {
         return;
     }
     
-    // Basic check for table_name; column check is less strict as it might be SQLite
     if (!currentMetadataForQuery.table_name) {
-        chatHistory.innerHTML = '<p style="color: orange;">Table name is missing in metadata. Cannot generate SQL query.</p>';
+        chatHistory.innerHTML = '<p style="color: orange;">Table name is missing in metadata. Cannot generate query.</p>';
+        return;
+    }
+     // For R agent, columns are essential for the prompt
+    if (selectedAgentType === 'r_datatable' && (!currentMetadataForQuery.columns || currentMetadataForQuery.columns.length === 0)) {
+        chatHistory.innerHTML = '<p style="color: orange;">Column metadata is missing. R agent requires column information.</p>';
         return;
     }
 
+
     try {
-        chatHistory.innerHTML = '<p>Generating and executing SQL query...</p>';
-        const response = await fetch('/query', { // Changed from /execute_sql
+        chatHistory.innerHTML = `<p>Generating and executing ${selectedAgentType.toUpperCase()} query...</p>`;
+        const response = await fetch('/query', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({ 
                 naturalLanguageQuery: naturalLanguageQuery,
-                metadata: currentMetadataForQuery 
+                metadata: currentMetadataForQuery,
+                agent_type: selectedAgentType // Send selected agent type
             })
         });
 
@@ -138,15 +154,14 @@ document.getElementById('submitQuery').addEventListener('click', async () => {
             outputHTML += `<strong>Natural Language Answer:</strong><p>${result.natural_language_response}</p><hr>`;
         }
 
-        if (result.sql_query) {
-            outputHTML += `<strong>SQL Query:</strong><pre>${result.sql_query}</pre>`;
+        if (result.executed_query_text) { // Changed from sql_query to executed_query_text
+            outputHTML += `<strong>Executed Query (${selectedAgentType.toUpperCase()}):</strong><pre>${result.executed_query_text}</pre>`;
         } else {
-            outputHTML += `<strong>SQL Query:</strong><pre>(Not available)</pre>`;
+            outputHTML += `<strong>Executed Query (${selectedAgentType.toUpperCase()}):</strong><pre>(Not available)</pre>`;
         }
 
         if (result.error) {
-            // If there's an error, and it's not already part of the NL response (or NL response is generic)
-            if (!result.natural_language_response || !result.natural_language_response.toLowerCase().includes(result.error.toLowerCase())) {
+            if (!result.natural_language_response || !result.natural_language_response.toLowerCase().includes(String(result.error).toLowerCase())) {
                  outputHTML += `<p style="color: red;">Error: ${result.error}</p>`;
             }
         }

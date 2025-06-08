@@ -20,6 +20,22 @@ For detailed instructions on how to set up and use this application, especially 
 - `.gitignore`: Specifies intentionally untracked files that Git should ignore.
 - `requirements.txt`: Lists Python dependencies for the project.
 
+## Prerequisites
+
+This application requires Python 3.x. Python dependencies are listed in `requirements.txt`.
+
+### R Agent Requirements
+
+To use the R data.table agent for querying `.Rdata` or `.rda` files, you also need:
+
+1.  **R Installation**: R must be installed on the system and the `Rscript` command should be accessible from your system's PATH. You can download R from [CRAN (The Comprehensive R Archive Network)](https://cran.r-project.org/).
+2.  **R Packages**: The following R packages are required. You can install them from an R console using:
+    ```R
+    install.packages(c("data.table", "jsonlite"))
+    ```
+    *   `data.table`: Used by the R agent to execute queries on data frames.
+    *   `jsonlite`: Used to extract metadata from R data files (`.Rdata`, `.rda`) during the upload process.
+
 ## Getting Started
 
 1.  **Clone the repository:**
