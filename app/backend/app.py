@@ -12,6 +12,8 @@ import base64
 import subprocess
 import json
 import tempfile
+import sys
+import pyarrow as pa
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.env')) # Load from project root
 
@@ -251,6 +253,163 @@ def execute_r_script(r_code_string: str, rdata_file_path: str, target_object_nam
                  print(f"Warning: Could not delete temporary CSV file {temp_csv_path}: {e_clean_csv}")
 
 
+def execute_python_pandas_code(python_code_string: str, data_file_path: str, dataframe_name: str = 'df') -> tuple[pd.DataFrame | None, str | None]:
+    """
+    Executes Python Pandas code securely using a subprocess.
+
+    Args:
+        python_code_string (str): The Python code string to execute.
+                                  This code is expected to operate on a DataFrame
+                                  named `dataframe_name`.
+        data_file_path (str): Full path to the data file (CSV or Parquet).
+        dataframe_name (str): The name of the Pandas DataFrame variable in the executed code.
+
+    Returns:
+        tuple: (pandas.DataFrame, None) if successful, or (None, str) if an error occurred.
+    """
+    temp_script_file = None
+    temp_output_csv_file = None
+    temp_user_code_file = None
+
+    try:
+        # Create a temporary file for the user's Python code string
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.py', encoding='utf-8') as temp_user_code_file_obj:
+            temp_user_code_path = temp_user_code_file_obj.name
+            temp_user_code_file_obj.write(python_code_string)
+            temp_user_code_file_obj.flush() # Ensure it's written
+
+        # Create a temporary file for the main Python script to execute
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.py', encoding='utf-8') as temp_script_file_obj:
+            temp_script_path = temp_script_file_obj.name
+
+        # Create a temporary file path that the main script will use to save its output CSV
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv') as temp_output_csv_file_obj:
+            temp_output_csv_path = temp_output_csv_file_obj.name
+
+
+        # Sanitize paths for use in the script string (especially for Windows)
+        data_file_path_script = data_file_path.replace('\\', '/')
+        output_csv_path_script = temp_output_csv_path.replace('\\', '/')
+        user_code_path_script = temp_user_code_path.replace('\\', '/')
+
+        # Constructing script content line by line to avoid potential issues with large f-string blocks
+        script_lines = [
+            "import pandas as pd",
+            "import sys",
+            "import os",
+            "",
+            f"data_path = r'{data_file_path_script}'",
+            f"df_name = '{dataframe_name}'",
+            f"output_csv_path = r'{output_csv_path_script}'",
+            f"user_code_path = r'{user_code_path_script}'",
+            "",
+            "try:",
+            "    with open(user_code_path, 'r', encoding='utf-8') as f:",
+            "        user_code = f.read()",
+            "",
+            "    # Load the dataframe",
+            "    if data_path.endswith('.csv'):",
+            f"        globals()[df_name] = pd.read_csv(data_path)",
+            "    elif data_path.endswith('.parquet'):",
+            f"        globals()[df_name] = pd.read_parquet(data_path)",
+            "    else:",
+            "        raise ValueError(f\"Unsupported file type: {data_path}. Only CSV and Parquet are supported.\")", # Note: escaped quote for f-string within f-string
+            "",
+            "    # Execute the user's code",
+            "    exec(user_code, globals())",
+            "",
+            "    # After execution, retrieve the DataFrame by `df_name`.",
+            "    if df_name not in globals():",
+            "        print(f\"Error: DataFrame '{df_name}' not found after code execution. Did you delete or rename it?\", file=sys.stderr)",
+            "        sys.exit(1)",
+            "",
+            "    result_df = globals()[df_name]",
+            "",
+            "    if isinstance(result_df, pd.DataFrame):",
+            "        result_df.to_csv(output_csv_path, index=False)",
+            "        print(output_csv_path) # Success: print the path of the output CSV to stdout",
+            "    else:",
+            "        print(f\"Error: Resulting object '{df_name}' is not a Pandas DataFrame (type: {type(result_df)}).\", file=sys.stderr)",
+            "        sys.exit(1)",
+            "",
+            "except FileNotFoundError as e_fnf:",
+            "    print(f\"Error loading data: {e_fnf}\", file=sys.stderr)",
+            "    sys.exit(1)",
+            "except pd.errors.EmptyDataError as e_ede:",
+            "    print(f\"Error loading data: The file '{data_path}' is empty or contains no data.\", file=sys.stderr)",
+            "    sys.exit(1)",
+            "except ValueError as e_ve: # Catch our unsupported file type error",
+            "    print(f\"Error: {e_ve}\", file=sys.stderr)",
+            "    sys.exit(1)",
+            "except Exception as e:",
+            "    print(f\"Error during Python code execution: {str(e)}\", file=sys.stderr)",
+            "    sys.exit(1)",
+        ]
+        script_content = "\n".join(script_lines)
+
+        with open(temp_script_path, 'w', encoding='utf-8') as f:
+            f.write(script_content)
+
+        # Execute the temporary Python script using the same Python interpreter
+        # sys.executable ensures we use the same python that runs the main app
+        process = subprocess.run(
+            [sys.executable, temp_script_path],
+            capture_output=True, text=True, check=False, encoding='utf-8'
+        )
+
+        if process.returncode == 0:
+            # Successfully executed, stdout should contain the path to the output CSV
+            output_file_from_script = process.stdout.strip()
+            if os.path.exists(output_file_from_script):
+                try:
+                    # Read the resulting DataFrame from the script's output CSV
+                    returned_df = pd.read_csv(output_file_from_script)
+                    return returned_df, None
+                except pd.errors.EmptyDataError:
+                    # If the script outputs an empty CSV (e.g., df with 0 rows)
+                    return pd.DataFrame(), None
+                except Exception as e_read_csv:
+                    return None, f"Error reading result CSV from script: {str(e_read_csv)}. Stderr: {process.stderr.strip()}"
+            else:
+                # This case should ideally not be reached if returncode is 0 and script prints path
+                return None, f"Script executed successfully but output file '{output_file_from_script}' not found. Stderr: {process.stderr.strip()}"
+        else:
+            # Script execution failed
+            error_message = f"Python script execution failed (return code {process.returncode}). Error: {process.stderr.strip()}"
+            if not process.stderr.strip(): # Provide a generic message if stderr is empty
+                 error_message = f"Python script execution failed (return code {process.returncode}) with no specific error message from stderr."
+            return None, error_message
+
+    except FileNotFoundError: # For issues finding python interpreter or script itself (less likely with NamedTemporaryFile)
+        return None, "Error: Python interpreter or temporary script file not found."
+    except Exception as e:
+        # Catch-all for errors in this function itself (e.g., temp file creation issues)
+        return None, f"Python error in 'execute_python_pandas_code' function: {str(e)}"
+    finally:
+        # Clean up temporary files
+        if temp_script_path and os.path.exists(temp_script_path):
+            try:
+                os.remove(temp_script_path)
+            except Exception as e_clean_script:
+                print(f"Warning: Could not delete temporary Python script {temp_script_path}: {e_clean_script}")
+
+        if temp_user_code_path and os.path.exists(temp_user_code_path):
+            try:
+                os.remove(temp_user_code_path)
+            except Exception as e_clean_user_code:
+                print(f"Warning: Could not delete temporary user code file {temp_user_code_path}: {e_clean_user_code}")
+
+        # temp_output_csv_path is the path *string*. The actual file is temp_output_csv_file_obj.name
+        # We need to ensure it's cleaned up if it was created.
+        # The variable temp_output_csv_file_obj from the with statement might not be in scope here.
+        # We stored its name in temp_output_csv_path.
+        if temp_output_csv_path and os.path.exists(temp_output_csv_path): # Check path string
+             try:
+                 os.remove(temp_output_csv_path)
+             except Exception as e_clean_csv:
+                 print(f"Warning: Could not delete temporary output CSV file {temp_output_csv_path}: {e_clean_csv}")
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -304,6 +463,37 @@ def upload_file():
                 return jsonify({'message': 'File uploaded successfully', 'metadata': metadata_inferred}), 200
             except Exception as e:
                 return jsonify({'error': f'Error processing CSV file: {str(e)}'}), 500
+
+        elif filename.rsplit('.', 1)[1].lower() == 'parquet':
+            try:
+                pq_schema = pd.io.parquet.read_schema(filepath)
+                metadata_inferred['table_name'] = filename.rsplit('.', 1)[0]
+                metadata_inferred['columns'] = []
+
+                for i in range(len(pq_schema)):
+                    field = pq_schema.field(i)
+                    col_name = field.name
+                    arrow_type = field.type
+                    col_type = 'TEXT' # Default
+
+                    if pa.types.is_integer(arrow_type):
+                        col_type = 'INTEGER'
+                    elif pa.types.is_floating(arrow_type):
+                        col_type = 'REAL'
+                    elif pa.types.is_boolean(arrow_type):
+                        col_type = 'BOOLEAN'
+                    elif pa.types.is_temporal(arrow_type): # Covers date, time, timestamp
+                        col_type = 'DATETIME'
+                    elif pa.types.is_string(arrow_type) or pa.types.is_large_string(arrow_type) or pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
+                        col_type = 'TEXT'
+                    # Add more specific pyarrow types if needed, otherwise default to TEXT
+
+                    metadata_inferred['columns'].append({'name': col_name, 'type': col_type})
+
+                current_metadata = metadata_inferred
+                return jsonify({'message': 'File uploaded successfully (Parquet)', 'metadata': metadata_inferred}), 200
+            except Exception as e:
+                return jsonify({'error': f'Error processing Parquet file: {str(e)}'}), 500
         
         elif filename.rsplit('.', 1)[1].lower() in ['rdata', 'rda']:
             try:
@@ -416,6 +606,7 @@ def handle_query():
     # Initialize variables
     sql_query = ""
     r_code_generated = ""
+    python_code_generated = ""
     executed_query_text = ""
     results_df = None
     error_message = None
@@ -437,12 +628,12 @@ def handle_query():
     if not table_name_for_query:
         return jsonify({'error': 'Could not determine table name for query.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
 
-    # Prerequisite check for column metadata (common for both SQL and R, unless SQLite for SQL)
-    # For R, column metadata is essential for the prompt.
+    # Prerequisite check for column metadata (common for SQL, R, and Python Pandas, unless SQLite for SQL)
     is_sqlite = current_uploaded_filename.rsplit('.', 1)[1].lower() == 'sqlite'
-    if not is_sqlite or agent_type == 'r_datatable': # For R, always need metadata. For SQL, need if not SQLite.
+    # Python Pandas and R DataTable always need column metadata. SQL needs it if not SQLite.
+    if agent_type == 'python_pandas' or agent_type == 'r_datatable' or (agent_type == 'sql' and not is_sqlite):
         if not metadata_for_prompt or not metadata_for_prompt.get('columns'):
-            return jsonify({'error': 'Column metadata is missing or not provided. Please ensure metadata is processed or provided.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
+            return jsonify({'error': 'Column metadata is missing or not provided for the selected agent. Please ensure metadata is processed or provided.', 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
 
     try:
         deployment_name = os.environ.get("AZURE_DEPLOYMENT_NAME")
@@ -588,6 +779,72 @@ def handle_query():
                 print(f"Attempting corrected R code: {r_code_generated}")
                 results_df, error_message = execute_r_script(r_code_generated, current_uploaded_filepath, table_name_for_query)
 
+        elif agent_type == 'python_pandas':
+            # --- Python Pandas Agent Logic ---
+            # Prerequisite checks already done (current_uploaded_filepath, table_name_for_query, metadata_for_prompt['columns'])
+
+            pandas_prompt_parts = [
+                "You are a Python programming assistant. Generate Python code using the Pandas library to answer the user's question.",
+                f"The data is loaded into a Pandas DataFrame named `{table_name_for_query}`.",
+                "Columns in the DataFrame:"
+            ]
+            for column in metadata_for_prompt['columns']:
+                pandas_prompt_parts.append(f"- {column['name']} (type: {column['type']})")
+
+            pandas_prompt_parts.extend([
+                f"\nUser Question: {natural_language_query}",
+                f"Generate only the Python Pandas code that performs the query on the DataFrame named `{table_name_for_query}` and assigns the result back to the same DataFrame variable.",
+                f"For example: {table_name_for_query} = {table_name_for_query}[{table_name_for_query}['some_column'] > 10]",
+                "Python Pandas Code:"
+            ])
+            current_pandas_prompt = "\n".join(pandas_prompt_parts)
+
+            if openai.api_type == "azure":
+                response = openai.Completion.create(engine=deployment_name, prompt=current_pandas_prompt, max_tokens=300, temperature=0.1)
+            else:
+                response = openai.Completion.create(model="text-davinci-003", prompt=current_pandas_prompt, max_tokens=300, temperature=0.1)
+
+            python_code_generated = response.choices[0].text.strip()
+            executed_query_text = python_code_generated
+
+            if not python_code_generated:
+                error_message = 'LLM did not return Python Pandas code.'
+                return jsonify({'error': error_message, 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
+
+            results_df, error_message = execute_python_pandas_code(python_code_generated, current_uploaded_filepath, dataframe_name=table_name_for_query)
+
+            if error_message: # Python code execution failed, try to correct
+                print(f"Initial Python Pandas code failed: {python_code_generated}. Error: {error_message}. Attempting correction...")
+                pandas_correction_prompt_parts = [
+                    "The following Python Pandas code resulted in an error. Please correct it.",
+                    f"The data is in a Pandas DataFrame named `{table_name_for_query}`.",
+                    f"Original Question: {natural_language_query}",
+                    "Columns in DataFrame:"
+                ]
+                for column in metadata_for_prompt['columns']:
+                    pandas_correction_prompt_parts.append(f"- {column['name']} (type: {column['type']})")
+
+                pandas_correction_prompt_parts.extend([
+                    f"Failed Python Code:\n{python_code_generated}",
+                    f"Error Message: {error_message}",
+                    f"Corrected Python Pandas Code (assign result back to `{table_name_for_query}`):"
+                ])
+                pandas_correction_prompt = "\n".join(pandas_correction_prompt_parts)
+
+                if openai.api_type == "azure":
+                    correction_response = openai.Completion.create(engine=deployment_name, prompt=pandas_correction_prompt, max_tokens=350, temperature=0.15)
+                else:
+                    correction_response = openai.Completion.create(model="text-davinci-003", prompt=pandas_correction_prompt, max_tokens=350, temperature=0.15)
+
+                corrected_python_code = correction_response.choices[0].text.strip()
+                if not corrected_python_code:
+                    error_message = f'LLM did not return corrected Python Pandas code. Original error: {error_message}'
+                    return jsonify({'error': error_message, 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
+
+                python_code_generated = corrected_python_code
+                executed_query_text = python_code_generated
+                print(f"Attempting corrected Python Pandas code: {python_code_generated}")
+                results_df, error_message = execute_python_pandas_code(python_code_generated, current_uploaded_filepath, dataframe_name=table_name_for_query)
         else:
             error_message = f"Unsupported agent_type: {agent_type}"
             # Return early as this is a fundamental configuration issue
@@ -634,7 +891,7 @@ def handle_query():
             if not nl_summary:
                 nl_summary = "LLM did not provide a natural language summary."
 
-        except openai.error.OpenAIError as e_sum:
+        except openai.APIError as e_sum: # For openai SDK v1.x
             print(f"OpenAI API error during summary generation: {str(e_sum)}")
             # Don't overwrite data results if only summary fails
             nl_summary = f"Error generating natural language summary: {str(e_sum)}"
@@ -649,7 +906,7 @@ def handle_query():
             'natural_language_response': nl_summary
         }), 200
 
-    except openai.error.OpenAIError as e: # Catch API errors from query generation/correction
+    except openai.APIError as e: # For openai SDK v1.x
         # executed_query_text might hold the last attempted query
         return jsonify({'error': f'OpenAI API error: {str(e)}', 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
     except Exception as e: # Catch any other unexpected errors

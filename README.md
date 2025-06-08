@@ -1,6 +1,6 @@
 # Project Title
 
-This project is a [brief description of the project].
+This project is a tool that allows users to query structured data files (CSV, Parquet, RData, SQLite) using natural language. It translates natural language questions into SQL, R (data.table), or Python (Pandas) code, executes it, and returns the results.
 
 ## User Guide
 
@@ -24,6 +24,11 @@ For detailed instructions on how to set up and use this application, especially 
 
 This application requires Python 3.x. Python dependencies are listed in `requirements.txt`.
 
+The application supports querying via different "agents":
+- **SQL Agent**: Uses DuckDB to query CSV, Parquet, and SQLite files.
+- **R Agent**: Uses R's `data.table` package to query RData (`.Rdata`, `.rda`) files.
+- **Python Pandas Agent**: Uses Python's `pandas` library to query CSV and Parquet files.
+
 ### R Agent Requirements
 
 To use the R data.table agent for querying `.Rdata` or `.rda` files, you also need:
@@ -35,6 +40,14 @@ To use the R data.table agent for querying `.Rdata` or `.rda` files, you also ne
     ```
     *   `data.table`: Used by the R agent to execute queries on data frames.
     *   `jsonlite`: Used to extract metadata from R data files (`.Rdata`, `.rda`) during the upload process.
+
+### Python Pandas Agent Requirements
+
+This agent uses Python's `pandas` library to execute queries on CSV and Parquet files.
+The necessary Python dependencies, including `pandas` and `pyarrow` (for Parquet support), are listed in `requirements.txt` and will be installed when you run:
+```bash
+pip install -r requirements.txt
+```
 
 ## Getting Started
 
@@ -56,7 +69,7 @@ To use the R data.table agent for querying `.Rdata` or `.rda` files, you also ne
     ```
 
 4.  **Configure OpenAI API Access:**
-    To enable the natural language to SQL generation feature, you need to provide access to an OpenAI model.
+    To enable the natural language to code (SQL, R, Python Pandas) generation feature, you need to provide access to an OpenAI model.
     **Do NOT hardcode your API keys in the code.** Use environment variables.
 
     *   **For standard OpenAI API:**
