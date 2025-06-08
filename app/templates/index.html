@@ -16,6 +16,7 @@
                 <select id="agentSelector">
                     <option value="sql" selected>SQL (DuckDB)</option>
                     <option value="r_datatable">R (data.table)</option>
+                    <option value="python_pandas">Python (Pandas)</option>
                 </select>
                 <button id="submitQuery">Submit Query</button>
             </div>
@@ -126,9 +127,10 @@ document.getElementById('submitQuery').addEventListener('click', async () => {
         chatHistory.innerHTML = '<p style="color: orange;">Table name is missing in metadata. Cannot generate query.</p>';
         return;
     }
-     // For R agent, columns are essential for the prompt
-    if (selectedAgentType === 'r_datatable' && (!currentMetadataForQuery.columns || currentMetadataForQuery.columns.length === 0)) {
-        chatHistory.innerHTML = '<p style="color: orange;">Column metadata is missing. R agent requires column information.</p>';
+     // For R agent and Python Pandas agent, columns are essential for the prompt
+    if ((selectedAgentType === 'r_datatable' || selectedAgentType === 'python_pandas') &&
+        (!currentMetadataForQuery.columns || currentMetadataForQuery.columns.length === 0)) {
+        chatHistory.innerHTML = '<p style="color: orange;">Column metadata is missing. ' + selectedAgentType.replace(/_/g, " ").toUpperCase() + ' agent requires column information.</p>';
         return;
     }
 
