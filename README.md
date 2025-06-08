@@ -20,6 +20,22 @@ For detailed instructions on how to set up and use this application, especially 
 - `.gitignore`: Specifies intentionally untracked files that Git should ignore.
 - `requirements.txt`: Lists Python dependencies for the project.
 
+## Key Features
+
+*   **Natural Language Queries**: Convert natural language questions into executable code (SQL, R, Python Pandas) to query uploaded data.
+*   **Data Upload**: Supports uploading various file types including CSV, Parquet, SQLite, and R data files (.Rdata, .rda).
+*   **Metadata Extraction**: Automatically extracts metadata (table name, column names, types) from uploaded files. For R data files, this involves executing a helper R script. For other types, it uses Pandas or direct inspection.
+*   **Multiple Query Agents**:
+    *   **SQL (DuckDB)**: For querying uploaded CSV, Parquet, or tables within SQLite files using SQL.
+    *   **R (data.table)**: For querying objects within uploaded `.Rdata` or `.rda` files using R's `data.table` syntax. (See R Agent Requirements under Prerequisites).
+    *   **Python (Pandas)**: For querying uploaded CSV or Parquet files using Python's Pandas library.
+        *   The Pandas agent allows users to leverage the full power of Pandas for data manipulation and analysis by generating Python code that is executed on the server.
+        *   **Supported Files**: CSV, Parquet.
+        *   **Security Note**: This agent uses `exec()` to run the LLM-generated Python (Pandas) code. While efforts are made to restrict the execution scope (e.g., by limiting available built-ins), using `exec()` with dynamically generated code carries inherent security risks. It is crucial to run this application in a trusted and controlled environment, especially if exposing it to untrusted users.
+*   **Data Visualization**: Generates basic plots from query results.
+*   **Self-Correction**: The LLM attempts to correct generated code (SQL, R, Pandas) if initial execution fails.
+*   **OpenAI Integration**: Leverages OpenAI models for code generation and natural language summarization. Supports standard OpenAI API and Azure OpenAI Service.
+
 ## Prerequisites
 
 This application requires Python 3.x. Python dependencies are listed in `requirements.txt`.

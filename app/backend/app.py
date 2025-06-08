@@ -250,6 +250,70 @@ def execute_r_script(r_code_string: str, rdata_file_path: str, target_object_nam
             except Exception as e_clean_csv:
                  print(f"Warning: Could not delete temporary CSV file {temp_csv_path}: {e_clean_csv}")
 
+def execute_pandas_code(pandas_code_string: str, file_path: str, df_name: str = "df") -> tuple[pd.DataFrame | None, str | None]:
+    """
+    Executes Python Pandas code on a DataFrame loaded from a CSV or Parquet file.
+
+    Args:
+        pandas_code_string (str): The Python Pandas code string to execute.
+                                  This code should operate on a DataFrame named `df_name`
+                                  (defaults to "df") and ensure the final result is also
+                                  assigned back to this variable name.
+        file_path (str): The full path to the data file (CSV or Parquet).
+        df_name (str): The variable name for the DataFrame in the executed code.
+
+    Returns:
+        tuple: (pandas.DataFrame, None) if successful, or (None, str) if an error occurred.
+    """
+    if not file_path:
+        return None, "File path is missing."
+
+    file_ext = os.path.splitext(file_path)[1].lower()
+    loaded_dataframe = None
+
+    try:
+        if file_ext == '.csv':
+            loaded_dataframe = pd.read_csv(file_path)
+        elif file_ext == '.parquet':
+            loaded_dataframe = pd.read_parquet(file_path)
+        else:
+            return None, "Unsupported file type for Pandas execution. Please use CSV or Parquet."
+    except FileNotFoundError:
+        return None, f"Data file not found: {file_path}"
+    except Exception as e:
+        return None, f"Error loading data file '{file_path}': {str(e)}"
+
+    if loaded_dataframe is None: # Should be caught by exceptions, but as a safeguard
+        return None, "Failed to load DataFrame for an unknown reason."
+
+    local_scope = {
+        df_name: loaded_dataframe.copy(), # Operate on a copy to avoid modifying original cache if any
+        'pd': pd
+    }
+
+    try:
+        # Using restricted globals for some measure of safety, though exec is inherently risky.
+        # The pandas_code_string is expected to modify local_scope[df_name]
+        # or assign the result of operations back to local_scope[df_name].
+        exec(pandas_code_string, {"__builtins__": {}}, local_scope)
+
+        resulting_dataframe = local_scope.get(df_name)
+
+        if not isinstance(resulting_dataframe, pd.DataFrame):
+            return None, f"The executed Pandas code did not result in a DataFrame named '{df_name}' or the result is not a DataFrame."
+
+        return resulting_dataframe, None
+    except NameError as e:
+        return None, f"Pandas code execution error (NameError): {str(e)}. Ensure variables (like '{df_name}') are used correctly."
+    except SyntaxError as e:
+        return None, f"Pandas code execution error (SyntaxError): {str(e)}."
+    except TypeError as e:
+        return None, f"Pandas code execution error (TypeError): {str(e)}."
+    except KeyError as e:
+        return None, f"Pandas code execution error (KeyError): {str(e)}. Likely a column not found."
+    except Exception as e:
+        return None, f"An error occurred during Pandas code execution: {str(e)}"
+
 
 @app.route('/')
 def index():
@@ -416,6 +480,7 @@ def handle_query():
     # Initialize variables
     sql_query = ""
     r_code_generated = ""
+    pandas_code_generated = ""
     executed_query_text = ""
     results_df = None
     error_message = None
@@ -577,7 +642,7 @@ def handle_query():
                     r_correction_response = openai.Completion.create(engine=deployment_name, prompt=r_correction_prompt, max_tokens=250, temperature=0.15)
                 else:
                     r_correction_response = openai.Completion.create(model="text-davinci-003", prompt=r_correction_prompt, max_tokens=250, temperature=0.15)
-                
+
                 corrected_r_code = r_correction_response.choices[0].text.strip()
                 if not corrected_r_code:
                     error_message = f'LLM did not return corrected R code. Original error: {error_message}'
@@ -593,16 +658,95 @@ def handle_query():
             # Return early as this is a fundamental configuration issue
             return jsonify({'error': error_message, 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
 
+        elif agent_type == 'python_pandas':
+            # --- Python Pandas Agent Logic ---
+            file_ext = current_uploaded_filename.rsplit('.', 1)[1].lower()
+            if file_ext not in ['csv', 'parquet']:
+                error_message = "Python Pandas agent currently only supports CSV and Parquet files."
+                return jsonify({'error': error_message, 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
+
+            # Prerequisite for columns already checked if not SQLite (which is not applicable here)
+            if not metadata_for_prompt or not metadata_for_prompt.get('columns'):
+                 error_message = 'Column metadata is missing for Pandas agent.' # Should have been caught earlier, but double check
+                 return jsonify({'error': error_message, 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
+
+
+            pandas_prompt_parts = [
+                "You are a Python programming assistant. Generate Python code using the Pandas library to answer the user's question.",
+                "The data is loaded into a Pandas DataFrame named `df`.",
+                "DataFrame variable name: df",
+                "Columns in `df` (with inferred types):"
+            ]
+            for column in metadata_for_prompt['columns']:
+                pandas_prompt_parts.append(f"- {column['name']} (type: {column['type']})") # Type might be conceptual from earlier steps
+
+            pandas_prompt_parts.extend([
+                f"\nUser Question: {natural_language_query}",
+                "Generate only the Python Pandas code that performs the query on `df` and assigns the final resulting DataFrame back to the variable `df`.",
+                "For example: df = df[df['some_column'] > 10]",
+                "Python Pandas Code:"
+            ])
+            current_pandas_prompt = "\n".join(pandas_prompt_parts)
+
+            if openai.api_type == "azure":
+                response = openai.Completion.create(engine=deployment_name, prompt=current_pandas_prompt, max_tokens=250, temperature=0.1)
+            else:
+                response = openai.Completion.create(model="text-davinci-003", prompt=current_pandas_prompt, max_tokens=250, temperature=0.1)
+
+            pandas_code_generated = response.choices[0].text.strip()
+            executed_query_text = pandas_code_generated
+            if not pandas_code_generated:
+                error_message = 'LLM did not return Python Pandas code.'
+                return jsonify({'error': error_message, 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
+
+            results_df, error_message = execute_pandas_code(pandas_code_generated, current_uploaded_filepath, "df")
+
+            if error_message: # Pandas execution failed, try to correct
+                print(f"Initial Pandas code failed: {pandas_code_generated}. Error: {error_message}. Attempting correction...")
+                pandas_correction_prompt_parts = [
+                    "The following Python Pandas code resulted in an error. Please correct it.",
+                    "The data is in a Pandas DataFrame named `df`.",
+                    f"Original Question: {natural_language_query}",
+                    "Columns in `df` (with inferred types):"
+                ]
+                for column in metadata_for_prompt['columns']:
+                    pandas_correction_prompt_parts.append(f"- {column['name']} (type: {column['type']})")
+
+                pandas_correction_prompt_parts.extend([
+                    f"Failed Pandas Code:\n{pandas_code_generated}",
+                    f"Error Message: {error_message}",
+                    "Corrected Python Pandas Code (assign final result to `df`):"
+                ])
+                pandas_correction_prompt = "\n".join(pandas_correction_prompt_parts)
+
+                if openai.api_type == "azure":
+                    correction_response = openai.Completion.create(engine=deployment_name, prompt=pandas_correction_prompt, max_tokens=300, temperature=0.15)
+                else:
+                    correction_response = openai.Completion.create(model="text-davinci-003", prompt=pandas_correction_prompt, max_tokens=300, temperature=0.15)
+
+                corrected_pandas_code = correction_response.choices[0].text.strip()
+                if not corrected_pandas_code:
+                    error_message = f'LLM did not return corrected Pandas code. Original error: {error_message}'
+                    return jsonify({'error': error_message, 'executed_query_text': executed_query_text, 'results': None, 'natural_language_response': None}), 500
+
+                pandas_code_generated = corrected_pandas_code
+                executed_query_text = pandas_code_generated
+                print(f"Attempting corrected Pandas code: {pandas_code_generated}")
+                results_df, error_message = execute_pandas_code(pandas_code_generated, current_uploaded_filepath, "df")
+
+        else:
+            error_message = f"Unsupported agent_type: {agent_type}"
+            return jsonify({'error': error_message, 'executed_query_text': None, 'results': None, 'natural_language_response': None}), 400
+
         # --- Common Result Processing & Summarization ---
         if error_message:
-            # This error is from the execution (or correction attempt) of SQL or R code
+            # This error is from the execution (or correction attempt) of SQL, R or Pandas code
             return jsonify({'executed_query_text': executed_query_text, 'error': error_message, 'results': None, 'natural_language_response': None}), 400
 
-        # If we reach here, results_df should be populated from SQL or R execution
         if results_df is not None:
             last_successful_df = results_df.copy()
             results_json = results_df.to_dict(orient='records')
-        else: # Should ideally not happen if error_message was not set, but as a safeguard
+        else:
             results_json = []
             last_successful_df = pd.DataFrame()
 
