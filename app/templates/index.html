@@ -3,49 +3,61 @@
 {% block title %}Agent Interaction - Home{% endblock %}
 
 {% block content %}
-    <h1>Agent Interaction UI</h1>
+    <div class="header">
+        <h1>📊 Your Data Insight Agent</h1>
+    </div>
 
-    <div class="chat-container">
-        <div class="chat-history" id="chatHistory">
-            <!-- Agent responses (SQL query) will be displayed here -->
-        </div>
-        <div class="chat-input">
-            <textarea id="naturalLanguageQuery" placeholder="Enter your query here..."></textarea>
-            <div>
-                <label for="agentSelector">Select Agent:</label>
-                <select id="agentSelector">
-                    <option value="sql" selected>SQL (DuckDB)</option>
-                    <option value="r_datatable">R (data.table)</option>
-                    <option value="python_pandas">Python (Pandas)</option>
-                </select>
-                <button id="submitQuery">Submit Query</button>
+    <div class="page-section" id="top-page">
+        <div class="column" id="data-upload-section">
+            <h2>Data Upload</h2>
+            <form id="uploadForm" enctype="multipart/form-data">
+                <input type="file" id="fileUpload" name="file">
+                <button type="button" id="uploadData">Upload File</button>
+            </form>
+            <div id="uploadMessages">
+                <!-- Upload status and metadata will be displayed here -->
             </div>
         </div>
-    </div>
-
-    <div class="file-upload-container">
-        <h2>Data Upload</h2>
-        <form id="uploadForm" enctype="multipart/form-data">
-            <input type="file" id="fileUpload" name="file">
-            <button type="button" id="uploadData">Upload File</button>
-        </form>
-        <div id="uploadMessages">
-            <!-- Upload status and metadata will be displayed here -->
+        <div class="column" id="metadata-section">
+            <h2>Metadata</h2>
+            <textarea id="metadataDisplay" placeholder="Editable metadata will appear here..."></textarea> {# readonly attribute removed #}
+            <button id="approveMetadata">Approve Metadata</button>
         </div>
     </div>
 
-    <div class="metadata-container">
-        <h2>Metadata</h2>
-        <textarea id="metadataDisplay" placeholder="Editable metadata will appear here..." readonly></textarea>
-        <button id="approveMetadata">Approve Metadata</button>
+    <div class="page-section" id="middle-page">
+        <div class="column" id="agent-selection-section">
+            <h2>Select Agent</h2>
+            <div class="radio-group">
+                <input type="radio" id="sqlAgent" name="agentType" value="sql" checked>
+                <label for="sqlAgent">SQL (DuckDB)</label><br>
+                <input type="radio" id="rAgent" name="agentType" value="r_datatable">
+                <label for="rAgent">R (data.table)</label><br>
+                <input type="radio" id="pythonAgent" name="agentType" value="python_pandas">
+                <label for="pythonAgent">Python (Pandas)</label><br>
+            </div>
+        </div>
+        <div class="column" id="query-submission-section">
+            <h2>Enter Query</h2>
+            <textarea id="naturalLanguageQuery" placeholder="Enter your query here..."></textarea>
+            <button id="submitQuery">Submit Query</button>
+        </div>
     </div>
 
-    <div class="plot-container">
-        <h2>Plot Display</h2>
-        <div id="plotDisplay">
-            <!-- Plots will be rendered here -->
+    <div class="page-section" id="bottom-page">
+        <div class="column" id="visualization-section">
+            <h2>Plot Display</h2>
+            <div id="plotDisplay">
+                <!-- Plots will be rendered here -->
+            </div>
+            <button id="requestPlot">Generate Plot</button>
         </div>
-        <button id="requestPlot">Generate Plot</button>
+        <div class="column" id="response-section">
+            <h2>Response</h2>
+            <div class="chat-history" id="chatHistory">
+                <!-- Agent responses (SQL query) will be displayed here -->
+            </div>
+        </div>
     </div>
 
 <script>
@@ -108,8 +120,8 @@ document.getElementById('uploadData').addEventListener('click', async () => {
 document.getElementById('submitQuery').addEventListener('click', async () => {
     const naturalLanguageQuery = document.getElementById('naturalLanguageQuery').value;
     const chatHistory = document.getElementById('chatHistory');
-    const agentSelector = document.getElementById('agentSelector');
-    const selectedAgentType = agentSelector.value;
+    // Updated to use radio buttons for agent selection
+    const selectedAgentType = document.querySelector('input[name="agentType"]:checked').value;
 
     chatHistory.innerHTML = ''; // Clear previous query/error
 
@@ -202,7 +214,44 @@ document.getElementById('submitQuery').addEventListener('click', async () => {
 
 document.getElementById('approveMetadata').addEventListener('click', () => {
     // Logic for approving metadata
-    console.log("Metadata approved (not implemented)");
+    // For now, we'll just update currentMetadataForQuery with the edited text
+    const metadataDisplay = document.getElementById('metadataDisplay');
+    const newMetadataString = metadataDisplay.value;
+    // This is a simplified parsing. A more robust solution would be needed for complex edits.
+    try {
+        const lines = newMetadataString.split('\n');
+        const newTableName = lines.find(line => line.startsWith("Table Name:"))?.split(":")[1]?.trim();
+        const newColumns = [];
+        let colsStarted = false;
+        for (const line of lines) {
+            if (line.toLowerCase().includes("columns:")) {
+                colsStarted = true;
+                continue;
+            }
+            if (colsStarted && line.startsWith("- ")) {
+                const parts = line.substring(2).split("(");
+                const name = parts[0].trim();
+                const type = parts[1]?.replace(")", "").trim();
+                if (name && type) {
+                    newColumns.push({ name, type });
+                }
+            }
+        }
+
+        if (newTableName) {
+            currentMetadataForQuery.table_name = newTableName;
+        }
+        if (newColumns.length > 0) { // Only update if new columns were successfully parsed
+            currentMetadataForQuery.columns = newColumns;
+        }
+        // Optionally, provide user feedback
+        document.getElementById('uploadMessages').innerHTML = '<p style="color: blue;">Metadata updated locally. Ready for query.</p>';
+        console.log("Updated metadata:", currentMetadataForQuery);
+
+    } catch(e) {
+        document.getElementById('uploadMessages').innerHTML = '<p style="color: red;">Error parsing edited metadata. Please check format.</p>';
+        console.error("Error parsing metadata:", e);
+    }
 });
 
 document.getElementById('requestPlot').addEventListener('click', async () => {
