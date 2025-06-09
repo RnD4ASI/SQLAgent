@@ -1,8 +1,12 @@
 body {
     font-family: sans-serif;
     margin: 0; /* Changed from 20px to 0 for full-width header */
-    background-color: #f4f4f4;
+    background-color: #f4f4f4; /* Fallback color */
     color: #333;
+    background-image: url('https://source.unsplash.com/1920x1080/?abstract,curves,professional,dark');
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed; /* Optional: for parallax-like effect */
 }
 
 /* Added Header Style */
@@ -109,35 +113,50 @@ button:hover {
 
 /* Agent Selection Styling */
 #agent-selection-section .radio-group label {
-    display: block; /* Make labels block elements for better spacing */
-    padding: 10px 15px;
+    display: block;
+    padding: 20px; /* Increased padding */
     border: 1px solid #ccc;
-    border-radius: 5px;
-    margin-bottom: 8px;
+    border-radius: 8px; /* Slightly more rounded corners */
+    margin-bottom: 12px; /* Adjusted margin */
     cursor: pointer;
     background-color: #f9f9f9;
-    transition: background-color 0.3s, border-color 0.3s;
+    transition: background-color 0.3s, border-color 0.3s, box-shadow 0.3s; /* Added box-shadow transition */
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); /* Added subtle box-shadow */
+    position: relative; /* For potential future use with pseudo-elements if needed */
 }
 
 #agent-selection-section .radio-group label:hover {
     background-color: #e9e9e9;
-    border-color: #bbb;
+    border-color: #aaa; /* Darker border on hover */
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15); /* Enhanced box-shadow on hover */
 }
 
 #agent-selection-section .radio-group input[type="radio"] {
-    margin-right: 8px;
-    vertical-align: middle;
+    appearance: none; /* Hide default radio button */
+    -webkit-appearance: none; /* For Safari/Chrome */
+    -moz-appearance: none; /* For Firefox */
+    width: 0;
+    height: 0;
+    opacity: 0;
+    margin: 0;
+    position: absolute; /* Take out of flow */
 }
 
 #agent-selection-section .radio-group input[type="radio"]:checked + label {
-    background-color: #e0efff; /* Light blue background for selected */
-    border-color: #007bff;
-    font-weight: bold; /* Make text bold for selected */
+    background-color: #e0efff;
+    border-color: #007bff; /* Prominent border color */
+    font-weight: bold;
     color: #0056b3;
+    box-shadow: 0 0 0 2px #007bff, 0 4px 8px rgba(0, 0, 0, 0.2); /* Clearer selected state with border and shadow */
 }
 
-/* Hide the actual radio button, style the label instead if more custom look is desired */
-/* For now, keeping radio visible for accessibility and simplicity */
+#agent-selection-section .radio-group input[type="radio"]:focus + label {
+    /* Optional: Add focus style for accessibility if desired, e.g. outline */
+    outline: 2px solid #0056b3;
+    outline-offset: 2px;
+}
+
+/* Comment about keeping radio visible is no longer accurate */
 
 
 /* Remove redundant containers from old structure if they are not used by base.html */
