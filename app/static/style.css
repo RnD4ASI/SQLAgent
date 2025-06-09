@@ -3,7 +3,7 @@ body {
     margin: 0; /* Changed from 20px to 0 for full-width header */
     background-color: #f4f4f4; /* Fallback color */
     color: #333;
-    background-image: url('https://source.unsplash.com/1920x1080/?abstract,curves,professional,dark');
+    background-image: url('https://unsplash.com/photos/rTZW4f02zY8/download?ixid=M3wxMjA3fDB8MXxzZWFyY2h8M3x8Y29zbW9zfGVufDB8fHx8MTc0OTQzNDIyNHww&force=true');
     background-size: cover;
     background-position: center;
     background-attachment: fixed; /* Optional: for parallax-like effect */
