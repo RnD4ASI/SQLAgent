@@ -9,17 +9,18 @@
 
     <div class="page-section" id="top-page">
         <div class="column" id="data-upload-section">
-            <h2>Data Upload</h2>
+            <h2>1. Data Upload</h2>
             <form id="uploadForm" enctype="multipart/form-data">
                 <input type="file" id="fileUpload" name="file">
                 <button type="button" id="uploadData">Upload File</button>
             </form>
+            <small>Valid formats: CSV, Parquet, SQLite, RData, RDA</small>
             <div id="uploadMessages">
                 <!-- Upload status and metadata will be displayed here -->
             </div>
         </div>
         <div class="column" id="metadata-section">
-            <h2>Metadata</h2>
+            <h2>2. Review metadata</h2>
             <textarea id="metadataDisplay" placeholder="Editable metadata will appear here..."></textarea> {# readonly attribute removed #}
             <button id="approveMetadata">Approve Metadata</button>
         </div>
@@ -27,51 +28,284 @@
 
     <div class="page-section" id="middle-page">
         <div class="column" id="agent-selection-section">
-            <h2>Select Agent</h2>
+            <h2>3. Select Agent</h2>
             <div class="radio-group">
                 <input type="radio" id="sqlAgent" name="agentType" value="sql" checked>
-                <label for="sqlAgent">SQL (DuckDB)</label><br>
+                <label for="sqlAgent">SQL</label><br>
                 <input type="radio" id="rAgent" name="agentType" value="r_datatable">
-                <label for="rAgent">R (data.table)</label><br>
+                <label for="rAgent">R</label><br>
                 <input type="radio" id="pythonAgent" name="agentType" value="python_pandas">
-                <label for="pythonAgent">Python (Pandas)</label><br>
+                <label for="pythonAgent">Python</label><br>
             </div>
         </div>
         <div class="column" id="query-submission-section">
-            <h2>Enter Query</h2>
-            <textarea id="naturalLanguageQuery" placeholder="Enter your query here..."></textarea>
+            <h2>4. Enter Query</h2>
+            <div class="query-tab-bar">
+                <button id="addNewQueryTab" class="tab-button">+</button>
+                <!-- Query tabs will be added here -->
+            </div>
+            <div class="query-tab-content">
+                <!-- Query textareas will be added here -->
+            </div>
             <button id="submitQuery">Submit Query</button>
         </div>
     </div>
 
     <div class="page-section" id="bottom-page">
+        <div class="column" id="response-section">
+            <h2>5. Review Response</h2>
+            <div class="response-tab-bar">
+                <!-- Response tabs will be added here (synced with query tabs) -->
+            </div>
+            <div class="response-tab-content">
+                <!-- Response content will be added here -->
+            </div>
+        </div>
         <div class="column" id="visualization-section">
-            <h2>Plot Display</h2>
+            <h2>6. Review Visualisation</h2>
             <div id="plotDisplay">
                 <!-- Plots will be rendered here -->
             </div>
             <button id="requestPlot">Generate Plot</button>
         </div>
-        <div class="column" id="response-section">
-            <h2>Response</h2>
-            <div class="chat-history" id="chatHistory">
-                <!-- Agent responses (SQL query) will be displayed here -->
-            </div>
-        </div>
     </div>
+
+<style>
+    .tab-button {
+        padding: 8px 12px;
+        cursor: pointer;
+        border: 1px solid #ccc;
+        border-bottom: none;
+        background-color: #f1f1f1;
+        margin-right: 2px;
+        border-radius: 5px 5px 0 0;
+    }
+    .tab-button.active {
+        background-color: #ddd;
+        border-bottom: 1px solid #ddd;
+    }
+    .tab-button.close-btn {
+        margin-left: 5px;
+        padding: 2px 5px;
+        font-size: 10px;
+        color: red;
+        border: 1px solid red;
+        border-radius: 50%;
+    }
+    .query-tab-bar, .response-tab-bar {
+        display: flex;
+        margin-bottom: 5px;
+    }
+    .query-tab-content .tab-pane, .response-tab-content .tab-pane {
+        display: none; /* Hidden by default */
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-top: none;
+        min-height: 100px; /* Ensure it's visible */
+    }
+    .query-tab-content .tab-pane.active, .response-tab-content .tab-pane.active {
+        display: block; /* Show active tab content */
+    }
+    .query-tab-content textarea {
+        width: 98%;
+        min-height: 80px;
+    }
+    .response-tab-content .chat-history {
+        min-height: 80px;
+    }
+</style>
 
 <script>
 let currentMetadataForQuery = null; // To store metadata from upload
+let queryTabCounter = 0;
+let activeQueryTabId = null;
+
+// DOM Elements
+const queryTabBar = document.querySelector('.query-tab-bar');
+const queryTabContent = document.querySelector('.query-tab-content');
+const responseTabBar = document.querySelector('.response-tab-bar');
+const responseTabContent = document.querySelector('.response-tab-content');
+const addNewQueryTabButton = document.getElementById('addNewQueryTab');
+const submitQueryButton = document.getElementById('submitQuery');
+
+function createNewTab(tabId, isFirstTab = false) {
+    // Create Query Tab Button
+    const queryTabButton = document.createElement('button');
+    queryTabButton.classList.add('tab-button');
+    queryTabButton.dataset.tabId = tabId;
+    queryTabButton.textContent = `Query ${tabId}`;
+
+    if (!isFirstTab) {
+        const closeButton = document.createElement('span');
+        closeButton.classList.add('close-btn');
+        closeButton.textContent = 'x';
+        closeButton.onclick = (e) => {
+            e.stopPropagation(); // Prevent tab switch
+            deleteTab(tabId);
+        };
+        queryTabButton.appendChild(closeButton);
+    }
+    queryTabButton.onclick = () => switchTab(tabId);
+    queryTabBar.insertBefore(queryTabButton, addNewQueryTabButton);
+
+    // Create Query Tab Pane (Textarea)
+    const queryPane = document.createElement('div');
+    queryPane.classList.add('tab-pane');
+    queryPane.dataset.tabId = tabId;
+    const queryTextarea = document.createElement('textarea');
+    queryTextarea.placeholder = "Enter your query here...";
+    if (isFirstTab && document.getElementById('naturalLanguageQuery')) { // Migrate existing
+        queryTextarea.value = document.getElementById('naturalLanguageQuery').value;
+         // Remove old textarea if it exists outside tabs
+        const oldTextarea = document.getElementById('naturalLanguageQuery');
+        if (oldTextarea && oldTextarea.parentElement !== queryPane) { // Check it's not already moved
+           // oldTextarea.remove(); // This will be removed by replacing the whole section
+        }
+    }
+    queryTextarea.id = `naturalLanguageQuery-${tabId}`; // Unique ID for textarea
+    queryPane.appendChild(queryTextarea);
+    queryTabContent.appendChild(queryPane);
+
+    // Create Response Tab Button (no close button, managed by query tab)
+    const responseTabButton = document.createElement('button');
+    responseTabButton.classList.add('tab-button');
+    responseTabButton.dataset.tabId = tabId;
+    responseTabButton.textContent = `Response ${tabId}`;
+    responseTabButton.onclick = () => switchTab(tabId); // Clicking response tab also switches query tab
+    responseTabBar.appendChild(responseTabButton);
+
+    // Create Response Tab Pane
+    const responsePane = document.createElement('div');
+    responsePane.classList.add('tab-pane');
+    responsePane.dataset.tabId = tabId;
+    const chatHistoryDiv = document.createElement('div');
+    chatHistoryDiv.classList.add('chat-history');
+    chatHistoryDiv.id = `chatHistory-${tabId}`; // Unique ID for chat history
+     if (isFirstTab && document.getElementById('chatHistory')) { // Migrate existing
+        chatHistoryDiv.innerHTML = document.getElementById('chatHistory').innerHTML;
+        // Remove old chat history if it exists outside tabs
+        const oldChatHistory = document.getElementById('chatHistory');
+        if (oldChatHistory && oldChatHistory.parentElement !== responsePane) {
+            // oldChatHistory.remove(); // This will be removed by replacing the whole section
+        }
+    }
+    responsePane.appendChild(chatHistoryDiv);
+    responseTabContent.appendChild(responsePane);
+
+    return tabId;
+}
+
+function switchTab(tabId) {
+    activeQueryTabId = tabId;
+    // Switch Query Tabs
+    queryTabBar.querySelectorAll('.tab-button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tabId === tabId && btn.id !== 'addNewQueryTab');
+    });
+    queryTabContent.querySelectorAll('.tab-pane').forEach(pane => {
+        pane.classList.toggle('active', pane.dataset.tabId === tabId);
+    });
+
+    // Switch Response Tabs
+    responseTabBar.querySelectorAll('.tab-button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tabId === tabId);
+    });
+    responseTabContent.querySelectorAll('.tab-pane').forEach(pane => {
+        pane.classList.toggle('active', pane.dataset.tabId === tabId);
+    });
+    localStorage.setItem('activeQueryTabId', tabId);
+}
+
+function deleteTab(tabIdToDelete) {
+    const queryTabButton = queryTabBar.querySelector(`.tab-button[data-tab-id="${tabIdToDelete}"]`);
+    const queryPane = queryTabContent.querySelector(`.tab-pane[data-tab-id="${tabIdToDelete}"]`);
+    const responseTabButton = responseTabBar.querySelector(`.tab-button[data-tab-id="${tabIdToDelete}"]`);
+    const responsePane = responseTabContent.querySelector(`.tab-pane[data-tab-id="${tabIdToDelete}"]`);
+
+    if (queryTabButton) queryTabButton.remove();
+    if (queryPane) queryPane.remove();
+    if (responseTabButton) responseTabButton.remove();
+    if (responsePane) responsePane.remove();
+
+    // If the deleted tab was active, switch to the first available tab or last if first was deleted
+    if (activeQueryTabId === tabIdToDelete) {
+        const remainingQueryTabs = queryTabBar.querySelectorAll('.tab-button:not(#addNewQueryTab)');
+        if (remainingQueryTabs.length > 0) {
+            switchTab(remainingQueryTabs[0].dataset.tabId);
+        } else {
+            // If all tabs are deleted, potentially add a new default one or handle empty state
+            // For now, let's add a new default one
+            queryTabCounter = 0; // Reset counter to ensure new tab is "Query 1"
+            addNewQueryAndResponseTab(true); // Add a fresh default tab
+        }
+    }
+}
+
+function addNewQueryAndResponseTab(isInitial = false) {
+    queryTabCounter++;
+    const newTabId = `${queryTabCounter}`;
+    createNewTab(newTabId, isInitial && queryTabCounter === 1);
+    switchTab(newTabId);
+}
+
+// Event Listener for Add New Query Tab Button
+addNewQueryTabButton.addEventListener('click', () => addNewQueryAndResponseTab(false));
+
+
+// Initialize: Create the first tab or load from localStorage
+document.addEventListener('DOMContentLoaded', () => {
+    // Remove the original textarea and chathistory divs as they are now part of the tabs
+    const originalQueryTextarea = document.getElementById('naturalLanguageQuery');
+    if (originalQueryTextarea && originalQueryTextarea.parentElement.id === 'query-submission-section') {
+        // This indicates it's the old one, not yet part of a tab
+        // It will be removed when the entire section is replaced by the new structure.
+        // No explicit removal needed here if the diff is applied correctly.
+    }
+    const originalChatHistory = document.getElementById('chatHistory');
+     if (originalChatHistory && originalChatHistory.parentElement.id === 'response-section') {
+        // Similar to above, will be replaced.
+    }
+
+    const savedActiveTabId = localStorage.getItem('activeQueryTabId');
+    let firstTabId;
+
+    // Basic check: if no query tabs exist, create the first one.
+    if (queryTabBar.querySelectorAll('.tab-button:not(#addNewQueryTab)').length === 0) {
+        firstTabId = addNewQueryAndResponseTab(true);
+    } else {
+        // If tabs somehow exist (e.g. static HTML, though not in this plan), get the first one's ID
+        firstTabId = queryTabBar.querySelector('.tab-button:not(#addNewQueryTab)').dataset.tabId;
+    }
+
+    if (savedActiveTabId && queryTabBar.querySelector(`.tab-button[data-tab-id="${savedActiveTabId}"]`)) {
+        switchTab(savedActiveTabId);
+    } else if (firstTabId) {
+        switchTab(firstTabId);
+    }
+    // Ensure there's always at least one tab, even if local storage was weird
+    if (!activeQueryTabId && queryTabBar.querySelectorAll('.tab-button:not(#addNewQueryTab)').length === 0) {
+         addNewQueryAndResponseTab(true);
+    } else if (!activeQueryTabId) {
+        // Fallback if activeQueryTabId is still not set
+        const firstAvailableTab = queryTabBar.querySelector('.tab-button:not(#addNewQueryTab)');
+        if (firstAvailableTab) {
+            switchTab(firstAvailableTab.dataset.tabId);
+        }
+    }
+});
+
 
 document.getElementById('uploadData').addEventListener('click', async () => {
     const fileInput = document.getElementById('fileUpload');
     const uploadMessages = document.getElementById('uploadMessages');
     const metadataDisplay = document.getElementById('metadataDisplay');
-    const chatHistory = document.getElementById('chatHistory');
+
+    // Get current active chat history to clear
+    const activeChatHistoryId = `chatHistory-${activeQueryTabId}`;
+    const activeChatHistory = document.getElementById(activeChatHistoryId);
 
     uploadMessages.innerHTML = ''; // Clear previous messages
     metadataDisplay.value = ''; // Clear previous metadata
-    chatHistory.innerHTML = ''; // Clear previous SQL query
+    if (activeChatHistory) activeChatHistory.innerHTML = ''; // Clear active chat history
     currentMetadataForQuery = null; // Reset metadata
 
     if (fileInput.files.length === 0) {
@@ -118,44 +352,54 @@ document.getElementById('uploadData').addEventListener('click', async () => {
 });
 
 document.getElementById('submitQuery').addEventListener('click', async () => {
-    const naturalLanguageQuery = document.getElementById('naturalLanguageQuery').value;
-    const chatHistory = document.getElementById('chatHistory');
-    // Updated to use radio buttons for agent selection
+    // Get current active query textarea and chat history
+    const activeQueryTextareaId = `naturalLanguageQuery-${activeQueryTabId}`;
+    const activeNaturalLanguageQueryTextarea = document.getElementById(activeQueryTextareaId);
+    const activeChatHistoryId = `chatHistory-${activeQueryTabId}`;
+    const activeChatHistory = document.getElementById(activeChatHistoryId);
+
+    if (!activeNaturalLanguageQueryTextarea || !activeChatHistory) {
+        console.error("Active query textarea or chat history not found for tab:", activeQueryTabId);
+        alert("Error: Could not find active query or response area. Please try adding a new tab or refreshing.");
+        return;
+    }
+    const naturalLanguageQueryValue = activeNaturalLanguageQueryTextarea.value;
+
     const selectedAgentType = document.querySelector('input[name="agentType"]:checked').value;
 
-    chatHistory.innerHTML = ''; // Clear previous query/error
+    activeChatHistory.innerHTML = ''; // Clear previous query/error in active tab
 
-    if (!naturalLanguageQuery.trim()) {
-        chatHistory.innerHTML = '<p style="color: orange;">Please enter a natural language query.</p>';
+    if (!naturalLanguageQueryValue.trim()) {
+        activeChatHistory.innerHTML = '<p style="color: orange;">Please enter a natural language query.</p>';
         return;
     }
 
     if (!currentMetadataForQuery) {
-        chatHistory.innerHTML = '<p style="color: orange;">Please upload a file and process its metadata first.</p>';
+        activeChatHistory.innerHTML = '<p style="color: orange;">Please upload a file and process its metadata first.</p>';
         return;
     }
     
     if (!currentMetadataForQuery.table_name) {
-        chatHistory.innerHTML = '<p style="color: orange;">Table name is missing in metadata. Cannot generate query.</p>';
+        activeChatHistory.innerHTML = '<p style="color: orange;">Table name is missing in metadata. Cannot generate query.</p>';
         return;
     }
      // For R agent and Python Pandas agent, columns are essential for the prompt
     if ((selectedAgentType === 'r_datatable' || selectedAgentType === 'python_pandas') &&
         (!currentMetadataForQuery.columns || currentMetadataForQuery.columns.length === 0)) {
-        chatHistory.innerHTML = '<p style="color: orange;">Column metadata is missing. ' + selectedAgentType.replace(/_/g, " ").toUpperCase() + ' agent requires column information.</p>';
+        activeChatHistory.innerHTML = '<p style="color: orange;">Column metadata is missing. ' + selectedAgentType.replace(/_/g, " ").toUpperCase() + ' agent requires column information.</p>';
         return;
     }
 
 
     try {
-        chatHistory.innerHTML = `<p>Generating and executing ${selectedAgentType.toUpperCase()} query...</p>`;
+        activeChatHistory.innerHTML = `<p>Generating and executing ${selectedAgentType.toUpperCase()} query...</p>`;
         const response = await fetch('/query', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({ 
-                naturalLanguageQuery: naturalLanguageQuery,
+                naturalLanguageQuery: naturalLanguageQueryValue, // Use value from active tab
                 metadata: currentMetadataForQuery,
                 agent_type: selectedAgentType // Send selected agent type
             })
@@ -205,10 +449,10 @@ document.getElementById('submitQuery').addEventListener('click', async () => {
             outputHTML += '<p>No results returned from query execution.</p>';
         }
         
-        chatHistory.innerHTML = outputHTML;
+        activeChatHistory.innerHTML = outputHTML; // Display in active tab's chat history
 
     } catch (error) {
-        chatHistory.innerHTML = `<p style="color: red;">An unexpected error occurred: ${error.toString()}</p>`;
+        activeChatHistory.innerHTML = `<p style="color: red;">An unexpected error occurred: ${error.toString()}</p>`;
     }
 });
 
