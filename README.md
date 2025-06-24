@@ -72,28 +72,34 @@ pip install -r requirements.txt
     To enable the natural language to code (SQL, R, Python Pandas) generation feature, you need to provide access to an OpenAI model.
     **Do NOT hardcode your API keys in the code.** Use environment variables.
 
-    *   **For standard OpenAI API:**
-        Set the following environment variables:
-        ```bash
-        export OPENAI_API_KEY="your_openai_api_key"
-        # Optional: If using a custom endpoint or proxy
-        # export OPENAI_API_BASE="your_custom_openai_api_base_url" 
-        ```
+    Create a `.env` file in the project root directory by copying `.env.example` and filling in your API keys and desired configurations.
+    ```bash
+    cp .env.example .env
+    # Now edit .env with your actual keys/endpoints
+    ```
+    The `.env.example` file provides placeholders for:
+    *   **OpenAI API:**
+        *   `OPENAI_API_KEY`: Your standard OpenAI API key.
+        *   `OPENAI_API_BASE` (Optional): For custom OpenAI-compatible endpoints.
+    *   **Azure OpenAI Service:** (These are used if `AZURE_OPENAI_ENDPOINT` is set)
+        *   `OPENAI_API_KEY`: Your Azure OpenAI API key. (LiteLLM will also look for `AZURE_API_KEY`)
+        *   `AZURE_OPENAI_ENDPOINT`: Your Azure OpenAI resource endpoint.
+        *   `AZURE_DEPLOYMENT_NAME`: The name of your model deployment on Azure.
+        *   `AZURE_OPENAI_API_VERSION` (Optional): API version, e.g., "2023-07-01-preview".
+    *   **Google Gemini API:**
+        *   `GEMINI_API_KEY`: Your Google AI Studio API key for Gemini models.
+    *   **Local HuggingFace Models (via an OpenAI-compatible server like Ollama):**
+        *   `LOCAL_HF_OLLAMA_MODEL_PREFIX`: e.g., "ollama/" (used by LiteLLM to identify Ollama models).
+        *   `LOCAL_HF_OLLAMA_API_BASE`: e.g., "http://localhost:11434" (default Ollama API base).
+        *   `LOCAL_HF_OLLAMA_API_KEY` (Optional): Usually not needed for local Ollama.
+        *   (Similar variables for a generic local server: `LOCAL_HF_GENERIC_MODEL_PREFIX`, `LOCAL_HF_GENERIC_API_BASE`, `LOCAL_HF_GENERIC_API_KEY`)
 
-    *   **For Azure OpenAI Service:**
-        Set the following environment variables:
-        ```bash
-        export AZURE_OPENAI_ENDPOINT="your_azure_openai_endpoint" 
-        export OPENAI_API_KEY="your_azure_openai_api_key"
-        # Also ensure you set AZURE_DEPLOYMENT_NAME in app/backend/app.py or as an environment variable
-        # if it's specific to your setup, e.g.:
-        export AZURE_DEPLOYMENT_NAME="your_deployment_name" 
-        ```
-        *Note: The application currently looks for `AZURE_DEPLOYMENT_NAME` as an environment variable if using Azure. You might need to adjust `app/backend/app.py` if your Azure setup differs in how the deployment/engine is specified.*
-
+    The application uses these environment variables to configure the selected LLM provider at runtime.
 
 5.  **Run the Flask application:**
     ```bash
+    # Ensure your virtual environment is active
+    # source venv/bin/activate
     cd app/backend
     python app.py
     ```
