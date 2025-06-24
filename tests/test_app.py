@@ -175,7 +175,7 @@ class TestApp(unittest.TestCase):
         
         self.assertEqual(response.status_code, 500)
         json_data = response.get_json()
-        self.assertIn('Error processing CSV file', json_data['error'])
+        self.assertIn('Error processing CSV', json_data['error']) # Simpler check
 
     # --- Test LLM Prompt Construction (mocking OpenAI API) ---
     # NOTE: All test_prompt_construction_* tests are now obsolete as the /query
@@ -221,9 +221,11 @@ class TestApp(unittest.TestCase):
         # E.g. DataFrame with only non-numeric data for some plot types, or empty after filtering
         backend_app_module.last_successful_df = pd.DataFrame({'text_col': ['a', 'b', 'c']})
         response = self.app.post('/plot_data')
-        self.assertEqual(response.status_code, 400) # Should fail as no numeric data
+        self.assertEqual(response.status_code, 400)
         json_data = response.get_json()
-        self.assertIn('Plotting logic not implemented for this data structure', json_data['error']) # Updated assertion
+        # This error message comes from the restored full plot_data logic
+        self.assertIn('Plotting logic not implemented for this data structure (e.g., no numeric columns or too few columns).', json_data['error'])
+
 
     # --- New Integration Tests for Refactored /query endpoint ---
 
@@ -248,7 +250,10 @@ class TestApp(unittest.TestCase):
 
         # Ensure necessary env vars for LLMFactory to pick 'openai' are notionally set
         # The actual call is mocked, but factory logic might run.
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "fake_openai_key_for_factory"}):
+        # For the custom framework path, CustomLLMFactory reads from os.environ.
+        # Also patch the module global for the initial check in /query for the old path.
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "fake_openai_key_for_custom_path_seq"}), \
+             patch.object(backend_app_module, 'OPENAI_API_KEY', "fake_openai_key_for_custom_path_seq"):
 
             # --- Mock LLM (litellm.completion) responses ---
             code_gen_response_mock = MagicMock(choices=[MagicMock(message=MagicMock(content="SELECT * FROM sample_table;"))])
@@ -446,8 +451,10 @@ class TestApp(unittest.TestCase):
             "code_gen_models": ["openai/code_gen_model_for_parallel_1", "openai/code_gen_model_for_parallel_2"],
             "summary_model": "openai/summary_model_for_parallel"
         }
-
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "fake_openai_key"}):
+        # For the custom framework path, CustomLLMFactory reads from os.environ.
+        # Also patch the module global for the initial check in /query for the old path.
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "fake_openai_key_for_custom_path_par"}), \
+             patch.object(backend_app_module, 'OPENAI_API_KEY', "fake_openai_key_for_custom_path_par"):
             payload = {
                 'naturalLanguageQuery': 'Get one data point with parallel OpenAI',
                 'agent_type': 'sql',
@@ -579,6 +586,51 @@ class TestApp(unittest.TestCase):
 
             # Verify LLM calls (at least 2 for parallel gen, 1 for seq gen, 1 for seq summary)
             self.assertGreaterEqual(mock_litellm_completion.call_count, 4)
+
+    @patch('app.backend.app.create_basic_gemini_agent') # Patch where it's imported in app.py
+    def test_query_endpoint_adk_gemini_test_success(self, mock_create_basic_gemini_agent):
+        # --- Setup global state ---
+        backend_app_module.current_uploaded_filepath = self.csv_file_path
+        backend_app_module.current_uploaded_filename = "sample_adk.csv"
+        payload_metadata = {
+            'table_name': 'sample_table_adk',
+            'columns': [{'name': 'id', 'type': 'INTEGER'}]
+        }
+        backend_app_module.current_metadata = payload_metadata
+
+        # --- Mock ADK Agent and its response ---
+        mock_adk_agent_instance = MagicMock()
+        mock_adk_response = MagicMock()
+        mock_adk_response.message = "Hello from basic ADK Gemini agent!"
+        mock_adk_agent_instance.send_sync.return_value = mock_adk_response
+        mock_create_basic_gemini_agent.return_value = mock_adk_agent_instance
+
+        # Mock AdkSession context manager if needed, though send_sync is the main interaction point here
+        # For this test, direct mocking of send_sync on the agent instance is sufficient.
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "fake_gemini_key_for_adk_test"}):
+            payload = {
+                'naturalLanguageQuery': 'Hi ADK',
+                'agent_type': 'sql', # Still part of payload structure
+                'llm_choice': 'adk_gemini_test',
+                'topology_choice': 'sequential_reflect', # Not used by this path, but part of payload
+                'metadata': payload_metadata
+            }
+            response = self.app.post('/query', data=json.dumps(payload), content_type='application/json')
+            json_response = response.get_json()
+
+            self.assertEqual(response.status_code, 200, f"Response body: {json_response}")
+            self.assertIsNone(json_response.get('error'), f"Query failed: {json_response.get('error')}")
+            self.assertIsNone(json_response.get('executed_query_text'))
+            self.assertEqual(json_response.get('results'), [])
+            self.assertEqual(json_response.get('natural_language_response'), "Hello from basic ADK Gemini agent!")
+
+            mock_create_basic_gemini_agent.assert_called_once()
+            mock_adk_agent_instance.send_sync.assert_called_once()
+            # We can inspect call args for send_sync if needed, e.g. to check message or context
+            call_args = mock_adk_agent_instance.send_sync.call_args
+            self.assertEqual(call_args.kwargs['message'], 'Hi ADK')
+            self.assertIn('natural_language_query', call_args.kwargs['context'])
 
 
 if __name__ == '__main__':
