@@ -99,16 +99,46 @@ The "brain" of our SQL Data Assistant is a powerful language model from OpenAI. 
     3.  Save this empty file immediately: Click `File > Save As...` and name it exactly `.env` (dot env). Make sure it's in the main project folder, at the same level as `requirements.txt`. `[Screenshot: VS Code explorer showing the .env file at the root]`
     4.  Open the `.env` file and type the following, replacing `"your_actual_key_here"` with the API key you copied from OpenAI:
         ```env
-        OPENAI_API_KEY="your_actual_key_here" 
+        # For OpenAI (Standard or Azure)
+        OPENAI_API_KEY="your_actual_openai_or_azure_api_key"
+
+        # If using Azure OpenAI, also uncomment and fill these:
+        # AZURE_OPENAI_ENDPOINT="your_azure_endpoint_here"
+        # AZURE_DEPLOYMENT_NAME="your_azure_deployment_name_here"
+        # AZURE_OPENAI_API_VERSION="2023-07-01-preview" # Or your specific version
+
+        # If using Google Gemini
+        # GEMINI_API_KEY="your_gemini_api_key"
+
+        # If using a local HuggingFace model (e.g., via Ollama)
+        # Ensure your local model server is running.
+        # LOCAL_HF_OLLAMA_API_BASE="http://localhost:11434" # Default for Ollama
+        # LOCAL_HF_OLLAMA_MODEL_PREFIX="ollama/"
+        # (The actual model like 'mistral' is chosen in the UI)
         ```
-        If you are using Azure OpenAI, you would use your Azure key for `OPENAI_API_KEY` and also add:
-        ```env
-        AZURE_OPENAI_ENDPOINT="your_azure_endpoint_here"
-        AZURE_DEPLOYMENT_NAME="your_azure_deployment_name_here"
-        ```
+        Refer to the `.env.example` file in the project for a full list of possible environment variables.
     5.  Save the `.env` file. The application is set up to read this file automatically when it starts.
 
-    *(Alternative for advanced users: You can also set environment variables directly in your operating system. Instructions for this are in the main `README.md` or developer documentation, but the `.env` file method is usually simpler for this project.)*
+    *(Alternative for advanced users: You can also set environment variables directly in your operating system. Instructions for this are in the main `README.md`.)*
+
+### Step 3.5: Choosing Your AI Model and Strategy (New!)
+
+With recent updates, you can now choose which AI model provider and which "thinking strategy" (topology) the assistant uses!
+
+*   **LLM Choice:** In the UI, you'll find a dropdown to select your preferred Large Language Model provider:
+    *   `OpenAI` (uses your OpenAI or Azure OpenAI key)
+    *   `Gemini` (uses your Google Gemini key)
+    *   `Local Ollama` (connects to a locally running Ollama instance for HuggingFace models - an advanced option)
+    *   *(Make sure you have configured the corresponding API key in your `.env` file for your chosen LLM.)*
+*   **Topology Choice:** This dropdown lets you pick how the AI tackles your query:
+    *   `Sequential Reflect` (Default): The AI generates code, runs it. If there's an error, it tries to fix it once. Then summarizes. (This was the original behavior).
+    *   `Parallel Ensemble`: The AI asks several models (or model configurations) to generate code at the same time and picks the first one that works.
+    *   `Iterative Reason+Act`: The AI thinks step-by-step, deciding what to do (like generate code, run code, or give an answer) in a loop, much like a human detective.
+    *   `Default Fallback`: Tries the `Parallel Ensemble` first. If that doesn't find a working solution, it falls back to the `Sequential Reflect` method.
+
+    For most users, starting with `OpenAI` as the LLM and `Default Fallback` or `Sequential Reflect` as the topology is a good balance. Experiment to see what works best for your data and questions!
+    `[Screenshot: UI showing new dropdowns for LLM Choice and Topology Choice]`
+
 
 ---
 
