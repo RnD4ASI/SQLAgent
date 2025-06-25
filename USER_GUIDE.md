@@ -97,9 +97,9 @@ The "brain" of our SQL Data Assistant is a powerful language model from OpenAI. 
     1.  In VS Code, make sure you are in the main project folder (e.g., `SQL_Data_Assistant`).
     2.  Create a new file: Click `File > New File`.
     3.  Save this empty file immediately: Click `File > Save As...` and name it exactly `.env` (dot env). Make sure it's in the main project folder, at the same level as `requirements.txt`. `[Screenshot: VS Code explorer showing the .env file at the root]`
-    4.  Open the `.env` file and type the following, replacing `"your_actual_key_here"` with the API key you copied from OpenAI:
+    4.  Open the `.env` file and type (or uncomment and fill in) the necessary API keys. The most important ones are:
         ```env
-        # For OpenAI (Standard or Azure)
+        # For OpenAI (Standard or Azure - used by the original framework and potentially by ADK)
         OPENAI_API_KEY="your_actual_openai_or_azure_api_key"
 
         # If using Azure OpenAI, also uncomment and fill these:
@@ -107,37 +107,26 @@ The "brain" of our SQL Data Assistant is a powerful language model from OpenAI. 
         # AZURE_DEPLOYMENT_NAME="your_azure_deployment_name_here"
         # AZURE_OPENAI_API_VERSION="2023-07-01-preview" # Or your specific version
 
-        # If using Google Gemini
-        # GEMINI_API_KEY="your_gemini_api_key"
+        # If using Google Gemini (especially for the new ADK-based features)
+        GEMINI_API_KEY="your_gemini_api_key"
 
-        # If using a local HuggingFace model (e.g., via Ollama)
-        # Ensure your local model server is running.
-        # LOCAL_HF_OLLAMA_API_BASE="http://localhost:11434" # Default for Ollama
+        # For Local HuggingFace Models (e.g., via Ollama - primarily for custom framework testing for now)
+        # Ensure your local model server is running if you plan to use these.
+        # LOCAL_HF_OLLAMA_API_BASE="http://localhost:11434"
         # LOCAL_HF_OLLAMA_MODEL_PREFIX="ollama/"
-        # (The actual model like 'mistral' is chosen in the UI)
         ```
-        Refer to the `.env.example` file in the project for a full list of possible environment variables.
+        **Important:** Refer to the `.env.example` file in your project for the complete and most up-to-date list of all possible environment variables and their purposes. The application is transitioning to use Google ADK, which may have specific ways it prefers to find keys (often via standard environment variables like `GEMINI_API_KEY` or Google Cloud authentication).
     5.  Save the `.env` file. The application is set up to read this file automatically when it starts.
 
     *(Alternative for advanced users: You can also set environment variables directly in your operating system. Instructions for this are in the main `README.md`.)*
 
-### Step 3.5: Choosing Your AI Model and Strategy (New!)
+### Step 3.5: AI Model and Strategy (Under Development with Google ADK)
 
-With recent updates, you can now choose which AI model provider and which "thinking strategy" (topology) the assistant uses!
+This application is being updated to use the Google Agent Development Kit (ADK). This will allow for more advanced AI behaviors, choices of different Large Language Models (LLMs like Google's Gemini and others), and various "thinking strategies" (topologies) for the AI to use when answering your questions.
 
-*   **LLM Choice:** In the UI, you'll find a dropdown to select your preferred Large Language Model provider:
-    *   `OpenAI` (uses your OpenAI or Azure OpenAI key)
-    *   `Gemini` (uses your Google Gemini key)
-    *   `Local Ollama` (connects to a locally running Ollama instance for HuggingFace models - an advanced option)
-    *   *(Make sure you have configured the corresponding API key in your `.env` file for your chosen LLM.)*
-*   **Topology Choice:** This dropdown lets you pick how the AI tackles your query:
-    *   `Sequential Reflect` (Default): The AI generates code, runs it. If there's an error, it tries to fix it once. Then summarizes. (This was the original behavior).
-    *   `Parallel Ensemble`: The AI asks several models (or model configurations) to generate code at the same time and picks the first one that works.
-    *   `Iterative Reason+Act`: The AI thinks step-by-step, deciding what to do (like generate code, run code, or give an answer) in a loop, much like a human detective.
-    *   `Default Fallback`: Tries the `Parallel Ensemble` first. If that doesn't find a working solution, it falls back to the `Sequential Reflect` method.
+Currently, the integration is in its early stages. While the UI might show options for choosing different LLMs and Topologies, these are primarily for the older framework. A test path for an ADK-based Gemini agent (`llm_choice='adk_gemini_test'`) has been added for development and will not be visible in the UI by default.
 
-    For most users, starting with `OpenAI` as the LLM and `Default Fallback` or `Sequential Reflect` as the topology is a good balance. Experiment to see what works best for your data and questions!
-    `[Screenshot: UI showing new dropdowns for LLM Choice and Topology Choice]`
+As development progresses, these choices will be fully integrated with the ADK framework, offering you more power and flexibility. For now, ensure your API keys (especially `OPENAI_API_KEY` for the default experience, and `GEMINI_API_KEY` if you intend to test ADK features via direct API calls) are correctly set up in your `.env` file.
 
 
 ---
@@ -229,9 +218,9 @@ If your query results are suitable for a chart, you can try to visualize them.
 If things aren't working as expected, here are a few common fixes:
 
 *   **"I see an error message about API Key / No response from assistant."**
-    *   **Check your API Key:** Double-check that your `.env` file has the correct `OPENAI_API_KEY` and that the file is saved. **Crucially, ensure the `.env` file is in the main project folder (e.g., `SQL_Data_Assistant`), not inside the `app` or `app/backend` folders.**
+    *   **Check your API Key(s):** Double-check that your `.env` file has the correct API keys for the LLM provider you are trying to use (e.g., `OPENAI_API_KEY` for OpenAI, `GEMINI_API_KEY` for Gemini/ADK tests). Ensure the file is saved in the main project folder.
     *   **Restart the Application:** Stop the application in the VS Code terminal (Ctrl+C) and start it again (`python app.py` in the `app/backend` folder). This helps pick up new `.env` file settings.
-    *   **Internet Connection:** Ensure you are connected to the internet (OpenAI is an online service).
+    *   **Internet Connection:** Ensure you are connected to the internet, as most LLM services are online.
 *   **"The application (Python script) isn't starting in the VS Code terminal."**
     *   **Correct Folder?:** Make sure your terminal is in the `app/backend` folder before running `python app.py`. You can type `cd ../` to go up one folder or `cd folder_name` to go into one.
     *   **Python Installed Correctly?:** Did you check "Add Python to PATH" during installation (for Windows)? Try closing and reopening VS Code.

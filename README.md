@@ -1,6 +1,8 @@
-# Project Title
+# Data Analytics Agent with Multi-LLM and Topology Support
 
 This project is a tool that allows users to query structured data files (CSV, Parquet, RData, SQLite) using natural language. It translates natural language questions into SQL, R (data.table), or Python (Pandas) code, executes it, and returns the results.
+
+**Note:** This project is currently undergoing a refactoring to integrate the **Google Agent Development Kit (ADK)**. This will enhance its capabilities for defining agent behavior, integrating various Large Language Models (LLMs), and managing complex task execution flows.
 
 ## User Guide
 
@@ -48,6 +50,15 @@ The necessary Python dependencies, including `pandas` and `pyarrow` (for Parquet
 ```bash
 pip install -r requirements.txt
 ```
+Key dependencies include Flask, Pandas, DuckDB, and an increasing reliance on `google-adk` for agent functionality and `litellm` for unified LLM API access.
+
+## Architecture Overview (Transitioning to ADK)
+
+The application consists of:
+- A **Flask-based backend** (`app/backend/app.py`) that handles API requests, file uploads, and orchestrates the data analysis process.
+- **Code Execution Utilities** (`app/backend/code_execution.py`) for running SQL, R, and Python (Pandas) scripts.
+- **Google Agent Development Kit (ADK) components** (under `app/backend/adk_components/`): This is the new core for defining intelligent agents, managing tools (like code execution), and interacting with various LLMs. The custom LLM provider and topology engine previously developed are being refactored into or replaced by ADK constructs.
+- A **frontend** (HTML templates in `app/templates/` and static assets) for user interaction.
 
 ## Getting Started
 
@@ -68,33 +79,21 @@ pip install -r requirements.txt
     pip install -r requirements.txt
     ```
 
-4.  **Configure OpenAI API Access:**
-    To enable the natural language to code (SQL, R, Python Pandas) generation feature, you need to provide access to an OpenAI model.
-    **Do NOT hardcode your API keys in the code.** Use environment variables.
+4.  **Configure LLM API Access:**
+    The application leverages Large Language Models (LLMs) for natural language understanding and code generation. With the integration of Google ADK, it aims to be model-agnostic.
+    **Do NOT hardcode your API keys in the code.** Use environment variables by creating a `.env` file.
 
-    Create a `.env` file in the project root directory by copying `.env.example` and filling in your API keys and desired configurations.
-    ```bash
-    cp .env.example .env
-    # Now edit .env with your actual keys/endpoints
-    ```
-    The `.env.example` file provides placeholders for:
-    *   **OpenAI API:**
-        *   `OPENAI_API_KEY`: Your standard OpenAI API key.
-        *   `OPENAI_API_BASE` (Optional): For custom OpenAI-compatible endpoints.
-    *   **Azure OpenAI Service:** (These are used if `AZURE_OPENAI_ENDPOINT` is set)
-        *   `OPENAI_API_KEY`: Your Azure OpenAI API key. (LiteLLM will also look for `AZURE_API_KEY`)
-        *   `AZURE_OPENAI_ENDPOINT`: Your Azure OpenAI resource endpoint.
-        *   `AZURE_DEPLOYMENT_NAME`: The name of your model deployment on Azure.
-        *   `AZURE_OPENAI_API_VERSION` (Optional): API version, e.g., "2023-07-01-preview".
-    *   **Google Gemini API:**
-        *   `GEMINI_API_KEY`: Your Google AI Studio API key for Gemini models.
-    *   **Local HuggingFace Models (via an OpenAI-compatible server like Ollama):**
-        *   `LOCAL_HF_OLLAMA_MODEL_PREFIX`: e.g., "ollama/" (used by LiteLLM to identify Ollama models).
-        *   `LOCAL_HF_OLLAMA_API_BASE`: e.g., "http://localhost:11434" (default Ollama API base).
-        *   `LOCAL_HF_OLLAMA_API_KEY` (Optional): Usually not needed for local Ollama.
-        *   (Similar variables for a generic local server: `LOCAL_HF_GENERIC_MODEL_PREFIX`, `LOCAL_HF_GENERIC_API_BASE`, `LOCAL_HF_GENERIC_API_KEY`)
+    1.  Copy the example configuration:
+        ```bash
+        cp .env.example .env
+        ```
+    2.  Edit the `.env` file with your API keys and endpoints. Refer to `.env.example` for the full list of supported variables. Key variables include:
+        *   `OPENAI_API_KEY`: For OpenAI models. Also used for Azure OpenAI (where it serves as `AZURE_API_KEY` for LiteLLM/ADK).
+        *   `AZURE_OPENAI_ENDPOINT`, `AZURE_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`: For Azure OpenAI.
+        *   `GEMINI_API_KEY`: For Google Gemini models. ADK uses this directly.
+        *   `LOCAL_HF_...` variables: For connecting to locally hosted HuggingFace models via an OpenAI-compatible API (e.g., Ollama). ADK's support for these local models is under development; currently, the custom framework path might use these via LiteLLM.
 
-    The application uses these environment variables to configure the selected LLM provider at runtime.
+    The application's LLM factories (both the older custom one and the newer ADK-based one) will attempt to use these environment variables to configure the selected LLM provider at runtime. Ensure the correct keys are set for the `llm_choice` you intend to use.
 
 5.  **Run the Flask application:**
     ```bash
@@ -107,21 +106,25 @@ pip install -r requirements.txt
 
 ## Running Tests
 
-The project uses Python's built-in `unittest` framework for testing.
+The project uses `pytest` for testing.
 
-1.  **Ensure all dependencies are installed:**
+1.  **Ensure all dependencies, including test dependencies, are installed:**
     ```bash
     pip install -r requirements.txt 
-    # (No specific test dependencies needed if using unittest with Python 3.3+)
     ```
+    (This includes `pytest` and `pytest-mock`).
 
 2.  **Navigate to the project root directory** (the one containing `app/` and `tests/`).
 
 3.  **Run the tests using the following command:**
     ```bash
-    python -m unittest discover -s tests -p "test_*.py"
+    PYTHONPATH=. pytest
     ```
-    This command will discover and run all files named `test_*.py` within the `tests` directory.
+    Or simply:
+    ```bash
+    pytest
+    ```
+    This command will discover and run all tests.
 
 ## Sample Data
 
